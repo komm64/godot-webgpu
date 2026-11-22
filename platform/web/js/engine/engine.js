@@ -352,7 +352,15 @@ const Engine = (function () {
 				'maxSampledTexturesPerShaderStage',
 				'maxSamplersPerShaderStage',
 				'maxColorAttachments',
+				'maxColorAttachmentBytesPerSample',
 				'maxBindGroups',
+				// Shaders with more than the default 16 varyings (e.g. 3D materials
+				// on the Mobile renderer) fail to compile without this.
+				'maxInterStageShaderVariables',
+				'maxVertexAttributes',
+				'maxStorageTexturesPerShaderStage',
+				'maxComputeWorkgroupStorageSize',
+				'maxComputeInvocationsPerWorkgroup',
 			];
 			for (var li = 0; li < limitsToMax.length; li++) {
 				var key = limitsToMax[li];
