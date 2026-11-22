@@ -114,6 +114,7 @@ jobs:
           name: komm64-webgpu-web-symbols
           path: bin/**/*.symbols
           if-no-files-found: ignore
+          include-hidden-files: true
 
       - name: Create Release (WebGPU tag only)
         if: startsWith(github.ref, 'refs/tags/')
