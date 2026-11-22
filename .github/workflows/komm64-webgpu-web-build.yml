@@ -25,6 +25,10 @@ on:
         options:
           - 'no'
           - 'yes'
+      extra_scons:
+        description: Extra SCons arguments, e.g. linkflags=--profiling-funcs to keep wasm function names for profiling.
+        required: false
+        default: ''
   push:
     tags:
       - 'v*-webgpu*'
@@ -88,7 +92,7 @@ jobs:
       - name: Compilation
         uses: ./.github/actions/godot-build
         with:
-          scons-flags: ${{ env.SCONS_FLAGS }} ${{ (github.event_name == 'push' || inputs.target == 'template_release') && 'production=yes' || 'dev_mode=yes' }} ${{ inputs.disable_3d == 'yes' && 'disable_3d=yes' || '' }}
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ (github.event_name == 'push' || inputs.target == 'template_release') && 'production=yes' || 'dev_mode=yes' }} ${{ inputs.disable_3d == 'yes' && 'disable_3d=yes' || '' }} ${{ inputs.extra_scons }}
           platform: web
           target: ${{ github.event_name == 'push' && 'template_release' || inputs.target }}
 
