@@ -141,6 +141,12 @@ struct WGVertexFormat {
 // =============================================================================
 
 struct WGShader {
+	// Set until the shader is first used: translation to WGSL and layout creation
+	// are deferred, since engines create many shader variants that are never drawn.
+	Ref<RenderingShaderContainer> pending_container;
+	Vector<RDD::ImmutableSampler> pending_immutable_samplers;
+	bool build_failed = false;
+
 	// Per-stage shader modules. Indexed by RDD::ShaderStage enum value.
 	WGPUShaderModule stage_modules[6] = {}; // SHADER_STAGE_MAX = 6 (vertex/frag/tess×2/compute/max)
 	WGPUShaderModule module = nullptr; // Legacy alias — points to first non-null module.

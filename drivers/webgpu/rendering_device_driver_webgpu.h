@@ -190,6 +190,8 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	// One per binding as well, since a writable storage texture cannot be bound twice in a bind group.
 	HashMap<uint64_t, WGPUTexture> unused_storage_textures;
 	HashMap<uint64_t, WGPUTextureView> unused_storage_views;
+	bool _shader_build(WGShader *p_shader, const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers);
+	bool _shader_ensure_built(WGShader *p_shader);
 	WGPUTextureView _get_unused_storage_view(uint32_t p_binding, WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension);
 	// The placeholder view to bind for p_texture at (p_set, p_binding) of p_shader, or nullptr if the binding is used.
 	WGPUTextureView _unused_storage_substitute(const WGShader *p_shader, uint32_t p_set, uint32_t p_binding, const WGTexture *p_texture);

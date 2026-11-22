@@ -218,7 +218,7 @@ static uint32_t _spv_to_wgsl_cache_misses = 0;
 // Cumulative shader/pipeline creation cost, reported in the [PERF] log line.
 // Timed with performance.now(), which is what the startup cost is measured in.
 struct WGCreationStats {
-	uint32_t shaders = 0, spec_modules = 0, render_pipelines = 0, compute_pipelines = 0;
+	uint32_t shaders_requested = 0, shaders = 0, spec_modules = 0, render_pipelines = 0, compute_pipelines = 0;
 	double shader_ms = 0, tint_ms = 0, spec_ms = 0, render_pipeline_ms = 0, compute_pipeline_ms = 0;
 };
 static WGCreationStats _creation_stats;
@@ -3624,16 +3624,34 @@ static WGPUShaderStage _stages_to_wgpu_visibility(uint32_t p_stage_mask) {
 
 RDD::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) {
 	ERR_FAIL_COND_V(p_shader_container.is_null(), ShaderID());
+	ERR_FAIL_COND_V(Ref<RenderingShaderContainerWebGPU>(p_shader_container).is_null(), ShaderID());
+	_creation_stats.shaders_requested++;
+
+	WGShader *shader = new WGShader();
+	shader->name = String(p_shader_container->shader_name.ptr());
+	shader->pending_container = p_shader_container;
+	shader->pending_immutable_samplers = p_immutable_samplers;
+	return ShaderID(shader);
+}
+
+bool RenderingDeviceDriverWebGPU::_shader_ensure_built(WGShader *p_shader) {
+	if (p_shader->pending_container.is_valid()) {
+		Ref<RenderingShaderContainer> container = p_shader->pending_container;
+		Vector<ImmutableSampler> samplers = p_shader->pending_immutable_samplers;
+		p_shader->pending_container.unref();
+		p_shader->pending_immutable_samplers.clear();
+		p_shader->build_failed = !_shader_build(p_shader, container, samplers);
+	}
+	return !p_shader->build_failed;
+}
+
+bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) {
 	_creation_stats.shaders++;
 	WGScopedMs timer(_creation_stats.shader_ms);
 
 	Ref<RenderingShaderContainerWebGPU> wg_container = p_shader_container;
-	ERR_FAIL_COND_V(wg_container.is_null(), ShaderID());
-
 	RenderingDeviceCommons::ShaderReflection shader_refl = p_shader_container->get_shader_reflection();
 
-	WGShader *shader = new WGShader();
-	shader->name = String(p_shader_container->shader_name.ptr());
 	shader->push_constant_bind_group = wg_container->get_push_constant_bind_group();
 	shader->push_constant_binding = wg_container->get_push_constant_binding();
 	shader->push_constant_size = shader_refl.push_constant_size;
@@ -5158,7 +5176,7 @@ RDD::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_container(const Re
 		goto cleanup;
 	}
 
-	return ShaderID(shader);
+	return true;
 
 	} // End block scope.
 
@@ -5180,15 +5198,22 @@ cleanup:
 	if (shader->merged_pc_group_layout) {
 		wgpuBindGroupLayoutRelease(shader->merged_pc_group_layout);
 	}
-	delete shader;
-	ERR_FAIL_V_MSG(ShaderID(), error_text);
+	for (int i = 0; i < 6; i++) {
+		shader->stage_modules[i] = nullptr;
+	}
+	shader->module = nullptr;
+	shader->pipeline_layout = nullptr;
+	shader->bind_group_layouts.clear();
+	shader->merged_pc_group_layout = nullptr;
+	ERR_FAIL_V_MSG(false, vformat("%s (shader '%s')", error_text, shader->name));
 }
 
 uint32_t RenderingDeviceDriverWebGPU::shader_get_layout_hash(ShaderID p_shader) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	if (!shader) return 0;
-	// Use the pipeline layout pointer as a cheap hash identifier.
-	return (uint32_t)(uint64_t)(void *)(shader->pipeline_layout);
+	// Every shader has its own pipeline layout, so the shader itself identifies it
+	// (its layout may not exist yet, see _shader_ensure_built).
+	return (uint32_t)(uint64_t)(void *)shader;
 }
 
 void RenderingDeviceDriverWebGPU::shader_free(ShaderID p_shader) {
@@ -5273,6 +5298,7 @@ WGPUTextureView RenderingDeviceDriverWebGPU::_unused_storage_substitute(const WG
 RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<BoundUniform> p_uniforms, ShaderID p_shader, uint32_t p_set_index, int p_linear_pool_index) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	ERR_FAIL_NULL_V(shader, UniformSetID());
+	ERR_FAIL_COND_V(!_shader_ensure_built(shader), UniformSetID());
 	ERR_FAIL_COND_V(p_set_index >= (uint32_t)shader->bind_group_layouts.size(), UniformSetID());
 
 	WGPUBindGroupLayout layout = shader->bind_group_layouts[p_set_index];
@@ -8533,6 +8559,7 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 		VectorView<PipelineSpecializationConstant> p_specialization_constants) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	ERR_FAIL_COND_V(!shader, PipelineID());
+	ERR_FAIL_COND_V(!_shader_ensure_built(shader), PipelineID());
 	_creation_stats.render_pipelines++;
 	WGScopedMs timer(_creation_stats.render_pipeline_ms);
 	WGVertexFormat *vf = p_vertex_format.id ? (WGVertexFormat *)(p_vertex_format.id) : nullptr;
@@ -9103,6 +9130,7 @@ void RenderingDeviceDriverWebGPU::command_compute_dispatch_indirect(CommandBuffe
 RDD::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	ERR_FAIL_COND_V(!shader, PipelineID());
+	ERR_FAIL_COND_V(!_shader_ensure_built(shader), PipelineID());
 	_creation_stats.compute_pipelines++;
 	WGScopedMs timer(_creation_stats.compute_pipeline_ms);
 	ERR_FAIL_COND_V_MSG(!shader->stage_modules[SHADER_STAGE_COMPUTE], PipelineID(),
@@ -9436,10 +9464,10 @@ void RenderingDeviceDriverWebGPU::begin_segment(uint32_t p_frame_index, uint32_t
 				perf.ring_overflows / f);
 		const WGCreationStats &cs = _creation_stats;
 		EM_ASM({
-			console.log('[PERF] create: shaders=' + $0 + '/' + $1.toFixed(0) + 'ms tint=' + $2 + '/' + $3.toFixed(0) + 'ms precompiled=' + $4 + ' disk=' + $11 +
+			console.log('[PERF] create: shaders=' + $0 + '/' + $12 + '/' + $1.toFixed(0) + 'ms tint=' + $2 + '/' + $3.toFixed(0) + 'ms precompiled=' + $4 + ' disk=' + $11 +
 				' spec_modules=' + $5 + '/' + $6.toFixed(0) + 'ms render_pipelines=' + $7 + '/' + $8.toFixed(0) + 'ms compute_pipelines=' + $9 + '/' + $10.toFixed(0) + 'ms at=' + performance.now().toFixed(0));
 		}, cs.shaders, cs.shader_ms, _spv_to_wgsl_cache_misses, cs.tint_ms, _spv_to_wgsl_precompiled_hits,
-				cs.spec_modules, cs.spec_ms, cs.render_pipelines, cs.render_pipeline_ms, cs.compute_pipelines, cs.compute_pipeline_ms, _spv_to_wgsl_disk_hits);
+				cs.spec_modules, cs.spec_ms, cs.render_pipelines, cs.render_pipeline_ms, cs.compute_pipelines, cs.compute_pipeline_ms, _spv_to_wgsl_disk_hits, cs.shaders_requested);
 		perf.reset();
 		perf.frames_since_log = 0;
 		perf.last_log_time = now;
