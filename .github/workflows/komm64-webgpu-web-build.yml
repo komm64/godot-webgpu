@@ -73,6 +73,9 @@ jobs:
       - name: Verify Emscripten setup
         run: emcc -v
 
+      - name: Install glslangValidator (WGSL precompile)
+        run: sudo apt-get update -q && sudo apt-get install -y -q glslang-tools && glslangValidator --version
+
       - name: Restore build cache
         uses: ./.github/actions/godot-cache-restore
         with:

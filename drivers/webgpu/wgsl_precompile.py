@@ -18,6 +18,7 @@ SPIR-V → WGSL conversion for ubershaders on every page load.
 import json
 import os
 import shlex
+import shutil
 import struct
 import subprocess
 import sys
@@ -774,6 +775,13 @@ def precompile_wgsl(repo_root, output_path, glslang_path="glslangValidator"):
     if not os.path.isfile(tint_cli):
         print("[WGSL Precompile] ERROR: bin/tint_convert_cli not found.", file=sys.stderr)
         print("[WGSL Precompile] Run: ./drivers/webgpu/tint_cli/build.sh", file=sys.stderr)
+        sys.exit(1)
+
+    # Without glslangValidator every shader fails identically and the template
+    # ships with an empty table, so every shader is translated at runtime.
+    if shutil.which(glslang_path) is None and not os.path.isfile(glslang_path):
+        print(f"[WGSL Precompile] ERROR: glslangValidator not found ('{glslang_path}').", file=sys.stderr)
+        print("[WGSL Precompile] Install it (e.g. 'apt install glslang-tools') or pass GLSLANG=<path>.", file=sys.stderr)
         sys.exit(1)
 
     total = 0
