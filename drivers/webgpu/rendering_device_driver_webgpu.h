@@ -184,6 +184,12 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	// for -- there is no "correct" Godot-level sampler to defer to here, so a dedicated nearest
 	// sampler is used unconditionally for any binding the shader-side scan determined needs it.
 	WGPUSampler dummy_nonfiltering_sampler = nullptr;
+	// 1x1 storage textures bound to image bindings that no shader stage uses
+	// (visibility None). Their layout format is only a placeholder, since the
+	// WGSL no longer declares them, so the real texture may not match it.
+	HashMap<uint32_t, WGPUTexture> unused_storage_textures;
+	HashMap<uint32_t, WGPUTextureView> unused_storage_views;
+	WGPUTextureView _get_unused_storage_view(WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension);
 
 	// --- BGL Rebinding Helper ---
 	WGPUBindGroup _get_compatible_bind_group(WGUniformSet *p_us, WGShader *p_target_shader, uint32_t p_set_idx);

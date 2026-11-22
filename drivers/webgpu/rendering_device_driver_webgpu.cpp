@@ -560,6 +560,15 @@ RenderingDeviceDriverWebGPU::~RenderingDeviceDriverWebGPU() {
 		wgpuSamplerRelease(dummy_nonfiltering_sampler);
 		dummy_nonfiltering_sampler = nullptr;
 	}
+	for (const KeyValue<uint32_t, WGPUTextureView> &kv : unused_storage_views) {
+		wgpuTextureViewRelease(kv.value);
+	}
+	unused_storage_views.clear();
+	for (const KeyValue<uint32_t, WGPUTexture> &kv : unused_storage_textures) {
+		wgpuTextureDestroy(kv.value);
+		wgpuTextureRelease(kv.value);
+	}
+	unused_storage_textures.clear();
 
 	// Release aliasing stub buffer.
 	if (aliasing_stub_buffer) {
@@ -5221,6 +5230,32 @@ void RenderingDeviceDriverWebGPU::shader_destroy_modules(ShaderID p_shader) {
 // UNIFORM SET
 // =============================================================================
 
+WGPUTextureView RenderingDeviceDriverWebGPU::_get_unused_storage_view(WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension) {
+	const uint32_t key = ((uint32_t)p_format << 8) | (uint32_t)p_dimension;
+	if (WGPUTextureView *view = unused_storage_views.getptr(key)) {
+		return *view;
+	}
+	WGPUTextureDescriptor td = {};
+	td.usage = WGPUTextureUsage_StorageBinding;
+	td.dimension = p_dimension == WGPUTextureViewDimension_3D ? WGPUTextureDimension_3D : WGPUTextureDimension_2D;
+	td.size = { 1, 1, 1 };
+	td.format = p_format;
+	td.mipLevelCount = 1;
+	td.sampleCount = 1;
+	WGPUTexture texture = wgpuDeviceCreateTexture(device, &td);
+	ERR_FAIL_NULL_V(texture, nullptr);
+	WGPUTextureViewDescriptor vd = {};
+	vd.format = p_format;
+	vd.dimension = p_dimension;
+	vd.mipLevelCount = 1;
+	vd.arrayLayerCount = 1;
+	vd.aspect = WGPUTextureAspect_All;
+	WGPUTextureView view = wgpuTextureCreateView(texture, &vd);
+	unused_storage_textures[key] = texture;
+	unused_storage_views[key] = view;
+	return view;
+}
+
 RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<BoundUniform> p_uniforms, ShaderID p_shader, uint32_t p_set_index, int p_linear_pool_index) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	ERR_FAIL_NULL_V(shader, UniformSetID());
@@ -5484,6 +5519,15 @@ RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<Bou
 						WGPUBindGroupEntry entry = {};
 						entry.binding = uniform.binding * 2;
 						entry.textureView = tex->default_view;
+						if (p_set_index < shader->bind_group_infos.size()) {
+							for (const WGShader::BindGroupEntry &bge : shader->bind_group_infos[p_set_index].entries) {
+								const WGPUBindGroupLayoutEntry &le = bge.layout_entry;
+								if (le.binding == entry.binding && le.visibility == WGPUShaderStage_None &&
+										le.storageTexture.format != WGPUTextureFormat_Undefined && le.storageTexture.format != tex->format) {
+									entry.textureView = _get_unused_storage_view(le.storageTexture.format, le.storageTexture.viewDimension);
+								}
+							}
+						}
 						us->bound_textures[entry.binding] = tex;
 						entries.push_back(entry);
 					}
