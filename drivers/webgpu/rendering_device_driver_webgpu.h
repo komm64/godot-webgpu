@@ -187,9 +187,10 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	// 1x1 storage textures bound to image bindings that no shader stage uses
 	// (visibility None). Their layout format is only a placeholder, since the
 	// WGSL no longer declares them, so the real texture may not match it.
-	HashMap<uint32_t, WGPUTexture> unused_storage_textures;
-	HashMap<uint32_t, WGPUTextureView> unused_storage_views;
-	WGPUTextureView _get_unused_storage_view(WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension);
+	// One per binding as well, since a writable storage texture cannot be bound twice in a bind group.
+	HashMap<uint64_t, WGPUTexture> unused_storage_textures;
+	HashMap<uint64_t, WGPUTextureView> unused_storage_views;
+	WGPUTextureView _get_unused_storage_view(uint32_t p_binding, WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension);
 	// The placeholder view to bind for p_texture at (p_set, p_binding) of p_shader, or nullptr if the binding is used.
 	WGPUTextureView _unused_storage_substitute(const WGShader *p_shader, uint32_t p_set, uint32_t p_binding, const WGTexture *p_texture);
 

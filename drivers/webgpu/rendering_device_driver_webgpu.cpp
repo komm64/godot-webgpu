@@ -560,11 +560,11 @@ RenderingDeviceDriverWebGPU::~RenderingDeviceDriverWebGPU() {
 		wgpuSamplerRelease(dummy_nonfiltering_sampler);
 		dummy_nonfiltering_sampler = nullptr;
 	}
-	for (const KeyValue<uint32_t, WGPUTextureView> &kv : unused_storage_views) {
+	for (const KeyValue<uint64_t, WGPUTextureView> &kv : unused_storage_views) {
 		wgpuTextureViewRelease(kv.value);
 	}
 	unused_storage_views.clear();
-	for (const KeyValue<uint32_t, WGPUTexture> &kv : unused_storage_textures) {
+	for (const KeyValue<uint64_t, WGPUTexture> &kv : unused_storage_textures) {
 		wgpuTextureDestroy(kv.value);
 		wgpuTextureRelease(kv.value);
 	}
@@ -5230,8 +5230,8 @@ void RenderingDeviceDriverWebGPU::shader_destroy_modules(ShaderID p_shader) {
 // UNIFORM SET
 // =============================================================================
 
-WGPUTextureView RenderingDeviceDriverWebGPU::_get_unused_storage_view(WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension) {
-	const uint32_t key = ((uint32_t)p_format << 8) | (uint32_t)p_dimension;
+WGPUTextureView RenderingDeviceDriverWebGPU::_get_unused_storage_view(uint32_t p_binding, WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension) {
+	const uint64_t key = ((uint64_t)p_binding << 32) | ((uint64_t)p_format << 8) | (uint64_t)p_dimension;
 	if (WGPUTextureView *view = unused_storage_views.getptr(key)) {
 		return *view;
 	}
@@ -5264,7 +5264,7 @@ WGPUTextureView RenderingDeviceDriverWebGPU::_unused_storage_substitute(const WG
 		const WGPUBindGroupLayoutEntry &le = bge.layout_entry;
 		if (le.binding == p_binding && le.visibility == WGPUShaderStage_None &&
 				le.storageTexture.format != WGPUTextureFormat_Undefined && le.storageTexture.format != p_texture->format) {
-			return _get_unused_storage_view(le.storageTexture.format, le.storageTexture.viewDimension);
+			return _get_unused_storage_view(p_binding, le.storageTexture.format, le.storageTexture.viewDimension);
 		}
 	}
 	return nullptr;
@@ -5873,7 +5873,7 @@ WGPUBindGroup RenderingDeviceDriverWebGPU::_get_compatible_bind_group(WGUniformS
 				if (WGPUTextureView substitute = _unused_storage_substitute(p_target_shader, p_set_idx, entry.binding, bound)) {
 					entry.textureView = substitute;
 				} else if (bound) {
-					for (const KeyValue<uint32_t, WGPUTextureView> &kv : unused_storage_views) {
+					for (const KeyValue<uint64_t, WGPUTextureView> &kv : unused_storage_views) {
 						if (kv.value == entry.textureView) {
 							entry.textureView = bound->default_view;
 							break;
