@@ -642,6 +642,10 @@ def compile_glsl_to_spirv(glsl_source, stage, glslang_path="glslangValidator"):
             [
                 glslang_path,
                 "-V",
+                # Match the engine's runtime compile (modules/glslang): Vulkan 1.1
+                # client, SPIR-V 1.3 (RenderingShaderContainerWebGPU). The
+                # precompiled table is keyed by a hash of the SPIR-V bytes.
+                "--target-env", "vulkan1.1",
                 "-S", stage,
                 "-o", spv_path,
                 glsl_path,
