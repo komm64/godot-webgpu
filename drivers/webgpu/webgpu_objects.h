@@ -33,6 +33,7 @@
 #ifdef WEBGPU_ENABLED
 
 #include "servers/rendering/rendering_device_driver.h"
+#include "servers/rendering/rendering_shader_container.h"
 
 #include <webgpu/webgpu.h>
 
