@@ -108,6 +108,13 @@ jobs:
           name: komm64-webgpu-web-${{ github.event_name == 'push' && 'template_release' || inputs.target }}
           path: bin/godot.web.${{ github.event_name == 'push' && 'template_release' || inputs.target }}.wasm32.nothreads.dlink.zip
 
+      - name: Upload symbol maps (if any)
+        uses: actions/upload-artifact@v4
+        with:
+          name: komm64-webgpu-web-symbols
+          path: bin/**/*.symbols
+          if-no-files-found: ignore
+
       - name: Create Release (WebGPU tag only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
