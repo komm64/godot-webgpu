@@ -190,6 +190,8 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	HashMap<uint32_t, WGPUTexture> unused_storage_textures;
 	HashMap<uint32_t, WGPUTextureView> unused_storage_views;
 	WGPUTextureView _get_unused_storage_view(WGPUTextureFormat p_format, WGPUTextureViewDimension p_dimension);
+	// The placeholder view to bind for p_texture at (p_set, p_binding) of p_shader, or nullptr if the binding is used.
+	WGPUTextureView _unused_storage_substitute(const WGShader *p_shader, uint32_t p_set, uint32_t p_binding, const WGTexture *p_texture);
 
 	// --- BGL Rebinding Helper ---
 	WGPUBindGroup _get_compatible_bind_group(WGUniformSet *p_us, WGShader *p_target_shader, uint32_t p_set_idx);

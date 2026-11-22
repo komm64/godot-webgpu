@@ -5256,6 +5256,20 @@ WGPUTextureView RenderingDeviceDriverWebGPU::_get_unused_storage_view(WGPUTextur
 	return view;
 }
 
+WGPUTextureView RenderingDeviceDriverWebGPU::_unused_storage_substitute(const WGShader *p_shader, uint32_t p_set, uint32_t p_binding, const WGTexture *p_texture) {
+	if (!p_shader || !p_texture || p_set >= p_shader->bind_group_infos.size()) {
+		return nullptr;
+	}
+	for (const WGShader::BindGroupEntry &bge : p_shader->bind_group_infos[p_set].entries) {
+		const WGPUBindGroupLayoutEntry &le = bge.layout_entry;
+		if (le.binding == p_binding && le.visibility == WGPUShaderStage_None &&
+				le.storageTexture.format != WGPUTextureFormat_Undefined && le.storageTexture.format != p_texture->format) {
+			return _get_unused_storage_view(le.storageTexture.format, le.storageTexture.viewDimension);
+		}
+	}
+	return nullptr;
+}
+
 RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<BoundUniform> p_uniforms, ShaderID p_shader, uint32_t p_set_index, int p_linear_pool_index) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	ERR_FAIL_NULL_V(shader, UniformSetID());
@@ -5519,14 +5533,8 @@ RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<Bou
 						WGPUBindGroupEntry entry = {};
 						entry.binding = uniform.binding * 2;
 						entry.textureView = tex->default_view;
-						if (p_set_index < shader->bind_group_infos.size()) {
-							for (const WGShader::BindGroupEntry &bge : shader->bind_group_infos[p_set_index].entries) {
-								const WGPUBindGroupLayoutEntry &le = bge.layout_entry;
-								if (le.binding == entry.binding && le.visibility == WGPUShaderStage_None &&
-										le.storageTexture.format != WGPUTextureFormat_Undefined && le.storageTexture.format != tex->format) {
-									entry.textureView = _get_unused_storage_view(le.storageTexture.format, le.storageTexture.viewDimension);
-								}
-							}
+						if (WGPUTextureView substitute = _unused_storage_substitute(shader, p_set_index, entry.binding, tex)) {
+							entry.textureView = substitute;
 						}
 						us->bound_textures[entry.binding] = tex;
 						entries.push_back(entry);
@@ -5856,6 +5864,23 @@ WGPUBindGroup RenderingDeviceDriverWebGPU::_get_compatible_bind_group(WGUniformS
 			}
 
 			// --- Texture view adaptation ---
+			// A storage image the target shader does not use has a placeholder
+			// layout format; bind a matching placeholder view.
+			// The reverse also happens: the source shader did not use it, the
+			// target does, so put the real texture back.
+			if (entry.textureView != nullptr && p_us->bound_textures.has(entry.binding)) {
+				WGTexture *bound = p_us->bound_textures[entry.binding];
+				if (WGPUTextureView substitute = _unused_storage_substitute(p_target_shader, p_set_idx, entry.binding, bound)) {
+					entry.textureView = substitute;
+				} else if (bound) {
+					for (const KeyValue<uint32_t, WGPUTextureView> &kv : unused_storage_views) {
+						if (kv.value == entry.textureView) {
+							entry.textureView = bound->default_view;
+							break;
+						}
+					}
+				}
+			}
 			// If the target BGL expects Float but the entry has a depth-format texture view,
 			// substitute the fallback float texture view.
 			if (entry.textureView != nullptr) {
