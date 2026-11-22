@@ -198,9 +198,9 @@ String OS_Web::get_name() const {
 }
 
 void OS_Web::add_frame_delay(bool p_can_draw, bool p_wake_for_events) {
-#ifndef PROXY_TO_PTHREAD_ENABLED
-	OS::add_frame_delay(p_can_draw, p_wake_for_events);
-#endif
+	// Frames are paced by requestAnimationFrame, and max_fps is applied by
+	// skipping callbacks in main_loop_callback(). Sleeping here would not yield
+	// to the browser: without threads, nanosleep() spins on emscripten_get_now().
 }
 
 void OS_Web::vibrate_handheld(int p_duration_ms, float p_amplitude) {

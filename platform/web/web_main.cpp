@@ -82,17 +82,23 @@ void main_loop_callback() {
 	uint64_t current_ticks = os->get_ticks_usec();
 #endif
 
+#ifndef PROXY_TO_PTHREAD_ENABLED
+	int max_fps = Engine::get_singleton()->get_max_fps();
+	// Allow a quarter frame of requestAnimationFrame jitter, so a cap equal to
+	// the display rate does not skip every other frame.
+	uint64_t jitter = max_fps > 0 ? (uint64_t)(250000 / max_fps) : 0;
+#endif
+
 	bool force_draw = DisplayServerWeb::get_singleton()->check_size_force_redraw();
 	if (force_draw) {
 		Main::force_redraw();
 #ifndef PROXY_TO_PTHREAD_ENABLED
-	} else if (current_ticks < target_ticks) {
+	} else if (current_ticks + jitter < target_ticks) {
 		return; // Skip frame.
 #endif
 	}
 
 #ifndef PROXY_TO_PTHREAD_ENABLED
-	int max_fps = Engine::get_singleton()->get_max_fps();
 	if (max_fps > 0) {
 		if (current_ticks - target_ticks > 1000000) {
 			// When the window loses focus, we stop getting updates and accumulate delay.
