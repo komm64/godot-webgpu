@@ -99,6 +99,61 @@ static void _fence_work_done(void *p_userdata) {
 // Parse "@group(G[u]) @binding(B[u])" from a WGSL string.
 // Handles the optional 'u'/'i' suffix that Tint emits for integer literals.
 // Returns true and sets r_grp/r_bnd on success.
+bool RenderingDeviceDriverWebGPU::_storage_format_supports_read_write(const char *p_wgsl_format, size_t p_len) const {
+	if (!has_rw_storage_textures) {
+		return false;
+	}
+	static const char *always[] = { "r32float", "r32uint", "r32sint" };
+	static const char *tier2[] = { "r8unorm", "r8uint", "r8sint", "rgba8unorm", "rgba8uint", "rgba8sint",
+		"r16uint", "r16sint", "r16float", "rgba16uint", "rgba16sint", "rgba16float",
+		"rgba32uint", "rgba32sint", "rgba32float" };
+	for (const char *f : always) {
+		if (strlen(f) == p_len && strncmp(f, p_wgsl_format, p_len) == 0) {
+			return true;
+		}
+	}
+	if (has_texture_formats_tier2) {
+		for (const char *f : tier2) {
+			if (strlen(f) == p_len && strncmp(f, p_wgsl_format, p_len) == 0) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// True when every read_write storage texture declared in the WGSL can be bound
+// as read_write directly, so the shader does not need the write + read-shadow split.
+bool RenderingDeviceDriverWebGPU::_wgsl_read_write_storage_supported(const char *p_wgsl) const {
+	for (const char *p = strstr(p_wgsl, "texture_storage_"); p; p = strstr(p + 1, "texture_storage_")) {
+		const char *lt = strchr(p, '<');
+		const char *gt = lt ? strchr(lt, '>') : nullptr;
+		const char *comma = lt ? strchr(lt, ',') : nullptr;
+		if (!gt || !comma || comma > gt) {
+			continue;
+		}
+		const char *acc = comma + 1;
+		while (*acc == ' ') {
+			acc++;
+		}
+		if (strncmp(acc, "read_write", 10) != 0) {
+			continue;
+		}
+		const char *fmt = lt + 1;
+		while (*fmt == ' ') {
+			fmt++;
+		}
+		const char *fmt_end = comma;
+		while (fmt_end > fmt && fmt_end[-1] == ' ') {
+			fmt_end--;
+		}
+		if (!_storage_format_supports_read_write(fmt, fmt_end - fmt)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 static bool parse_group_binding(const char *p, unsigned int &r_grp, unsigned int &r_bnd) {
 	if (strncmp(p, "@group(", 7) != 0) {
 		return false;
@@ -845,11 +900,17 @@ void RenderingDeviceDriverWebGPU::_check_capabilities() {
 		print_verbose("WebGPU: texture-formats-tier1 feature is available — r8/rg8 storage formats supported natively.");
 	}
 
-	// readonly-and-readwrite-storage-textures: allows read and read_write access
-	// modes on storage textures. Without this, only write-only is valid.
+	// readonly_and_readwrite_storage_textures is a WGSL language feature, not a
+	// device feature: it allows read and read_write access modes on storage
+	// textures. read_write is valid for r32* formats, and with
+	// texture-formats-tier2 also for the 8/16/32-bit RGBA and R formats.
 	has_rw_storage_textures = (bool)EM_ASM_INT({
+		var l = (typeof navigator !== 'undefined' && navigator.gpu) ? navigator.gpu.wgslLanguageFeatures : null;
+		return (l && l.has('readonly_and_readwrite_storage_textures')) ? 1 : 0;
+	});
+	has_texture_formats_tier2 = (bool)EM_ASM_INT({
 		var d = Module['preinitializedWebGPUDevice'];
-		return (d && d.features && d.features.has('readonly-and-readwrite-storage-textures')) ? 1 : 0;
+		return (d && d.features && d.features.has('texture-formats-tier2')) ? 1 : 0;
 	});
 	if (has_rw_storage_textures) {
 		print_verbose("WebGPU: readonly-and-readwrite-storage-textures feature is available.");
@@ -1658,14 +1719,12 @@ RDD::TextureID RenderingDeviceDriverWebGPU::texture_create(const TextureFormat &
 	// Upgrade to 32-bit equivalents when storage binding is needed.
 	if (tex->usage & WGPUTextureUsage_StorageBinding) {
 		tex->format = _promote_storage_format(tex->format);
-		// When readonly-and-readwrite-storage-textures is unavailable, read and
-		// read_write storage textures are converted to sampled textures in the
-		// shader. We need CopySrc (for read_write shadow copies) and
-		// TextureBinding (so the texture can be bound as a sampled texture
-		// for read-only storage textures converted to texture_2d).
-		if (!has_rw_storage_textures) {
-			tex->usage |= WGPUTextureUsage_CopySrc | WGPUTextureUsage_TextureBinding;
-		}
+		// Shaders split read_write storage textures the device cannot bind
+		// directly (see _wgsl_read_write_storage_supported) and convert read-only
+		// ones when the WGSL feature is missing. Those need CopySrc (for the
+		// read shadow copies) and TextureBinding (to bind as texture_2d). Which
+		// shaders split is only known at shader creation, so always add them.
+		tex->usage |= WGPUTextureUsage_CopySrc | WGPUTextureUsage_TextureBinding;
 	}
 
 	// When float32-filterable is not supported (e.g. Adreno GPU), float32
@@ -3779,7 +3838,7 @@ RDD::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_container(const Re
 		// Safari rejects read_write storage texture access at BGL validation.
 		// The shadow read binding uses the odd slot (B+1) which is free for IMAGE
 		// types due to preprocessing's binding doubling (even=resource, odd=sampler for combined).
-		if (!has_rw_storage_textures && strstr(wgsl_str, "read_write>")) {
+		if (strstr(wgsl_str, "read_write>") && !_wgsl_read_write_storage_supported(wgsl_str)) {
 			struct RWSplitInfo {
 				uint32_t grp, bnd;
 				String var_name, dim_type, fmt;
@@ -5943,7 +6002,7 @@ void RenderingDeviceDriverWebGPU::_copy_texture_to_rw_shadow(WGCommandBuffer *p_
 
 void RenderingDeviceDriverWebGPU::_sync_rw_storage_texture_shadows_after_compute_dispatch(WGCommandBuffer *p_cmd_buf) {
 	ERR_FAIL_NULL(p_cmd_buf);
-	if (has_rw_storage_textures || p_cmd_buf->active_encoder != WGCommandBuffer::COMPUTE) {
+	if (p_cmd_buf->active_encoder != WGCommandBuffer::COMPUTE) {
 		return;
 	}
 

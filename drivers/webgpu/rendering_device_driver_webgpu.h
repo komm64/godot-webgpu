@@ -88,7 +88,8 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	WGPULimits device_limits = WGPU_LIMITS_INIT;
 	bool timestamp_supported = false;
 	bool has_texture_formats_tier1 = false;
-	bool has_rw_storage_textures = false; // readonly-and-readwrite-storage-textures
+	bool has_texture_formats_tier2 = false;
+	bool has_rw_storage_textures = false; // WGSL language feature readonly_and_readwrite_storage_textures
 
 	struct RWShadowCopyTarget {
 		WGTexture *source = nullptr;
@@ -202,6 +203,9 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	// storage texel formats). With texture-formats-tier1, these formats are valid
 	// storage formats natively and promotion is skipped.
 	WGPUTextureFormat _promote_storage_format(WGPUTextureFormat p_format) const;
+	// Whether a read_write storage binding of this format is valid on this device.
+	bool _storage_format_supports_read_write(const char *p_wgsl_format, size_t p_len) const;
+	bool _wgsl_read_write_storage_supported(const char *p_wgsl) const;
 	WGPUBufferUsage _buffer_usage_to_wgpu(BitField<BufferUsageBits> p_usage) const;
 	WGPUTextureUsage _texture_usage_to_wgpu(BitField<TextureUsageBits> p_usage) const;
 	WGPUTextureDimension _texture_type_to_dimension(TextureType p_type) const;
