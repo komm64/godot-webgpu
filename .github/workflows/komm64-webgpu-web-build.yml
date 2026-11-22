@@ -1,8 +1,6 @@
 name: komm64 WebGPU Web Build
 
-# Builds the experimental WebGPU web export template for the komm64 fork.
-# Keep this separate from the normal Windows editor build so WebGPU branch
-# pushes do not spend a full Windows CI cycle unless explicitly requested.
+# Builds the WebGPU web export template (manual dispatch, or a release tag).
 
 on:
   workflow_dispatch:
@@ -10,7 +8,7 @@ on:
       ref:
         description: Branch, tag, or commit to build.
         required: true
-        default: komm64/4.6-webgpu
+        default: '4.7'
       target:
         description: Web export template target.
         required: true
@@ -29,7 +27,7 @@ on:
           - 'yes'
   push:
     tags:
-      - 'v*-komm64-webgpu*'
+      - 'v*-webgpu*'
 
 permissions:
   contents: write
