@@ -36,7 +36,11 @@
 #include "pixel_formats_webgpu.h"
 #include "spirv_preprocess.h"
 
+#include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/templates/hash_map.h"
+#include "core/version.h"
 #include "core/templates/hashfuncs.h"
 
 #include "tint_wrapper.h"
@@ -315,6 +319,51 @@ static char *_translate_spirv_to_wgsl(const uint8_t *p_spv_ptr, int p_spv_size) 
 
 // Returns a malloc'd null-terminated WGSL string (caller must free), or nullptr on
 // failure. Checks: (1) in-memory cache, (2) precompiled table, (3) Tint fallback.
+static uint32_t _spv_to_wgsl_disk_hits = 0;
+
+// Persistent WGSL cache next to the engine's shader cache (IndexedDB-backed on
+// the web), so a repeat visit skips Tint. Keyed by build, since the WGSL depends
+// on this driver's SPIR-V preprocessing and the bundled Tint. Empty when the
+// shader cache is disabled or the folder cannot be created.
+static const String &_wgsl_disk_cache_dir() {
+	static String dir;
+	static bool initialized = false;
+	if (initialized) {
+		return dir;
+	}
+	initialized = true;
+	if (!bool(GLOBAL_GET("rendering/shader_compiler/shader_cache/enabled"))) {
+		return dir;
+	}
+	const String root = "user://shader_cache";
+	const String name = "webgpu_wgsl_" + String(GODOT_VERSION_HASH).left(12);
+	if (DirAccess::make_dir_recursive_absolute(root.path_join(name)) != OK) {
+		return dir;
+	}
+	dir = root.path_join(name);
+	// Drop caches written by other builds.
+	Ref<DirAccess> da = DirAccess::open(root);
+	if (da.is_valid()) {
+		for (const String &sub : da->get_directories()) {
+			if (sub.begins_with("webgpu_wgsl_") && sub != name && da->change_dir(sub) == OK) {
+				da->erase_contents_recursive();
+				da->change_dir("..");
+				da->remove(sub);
+			}
+		}
+	}
+	return dir;
+}
+
+static char *_malloc_wgsl(const CharString &p_wgsl) {
+	size_t len = (size_t)p_wgsl.length() + 1;
+	char *out = (char *)malloc(len);
+	if (out) {
+		memcpy(out, p_wgsl.get_data(), len);
+	}
+	return out;
+}
+
 static char *_spv_to_wgsl_cached(const uint8_t *p_spv_ptr, int p_spv_size) {
 	uint32_t hash_lo = hash_murmur3_buffer(p_spv_ptr, p_spv_size);
 	uint32_t hash_hi = hash_murmur3_buffer(p_spv_ptr, p_spv_size, 0x9E3779B9);
@@ -349,17 +398,35 @@ static char *_spv_to_wgsl_cached(const uint8_t *p_spv_ptr, int p_spv_size) {
 		return out;
 	}
 
-	// 3. Fall back to Tint (for specialized shaders and shaders not in the table).
+	// 3. Check the persistent cache from an earlier run of this build.
+	const String &disk_dir = _wgsl_disk_cache_dir();
+	const String disk_path = disk_dir.is_empty() ? String() : disk_dir.path_join(String::num_uint64(spv_hash, 16) + ".wgsl");
+	if (!disk_path.is_empty() && FileAccess::exists(disk_path)) {
+		String wgsl = FileAccess::get_file_as_string(disk_path);
+		if (!wgsl.is_empty()) {
+			_spv_to_wgsl_disk_hits++;
+			_spv_to_wgsl_cache[spv_hash] = wgsl;
+			return _malloc_wgsl(wgsl.utf8());
+		}
+	}
+
+	// 4. Fall back to Tint (for specialized shaders and shaders not in the table).
 	_spv_to_wgsl_cache_misses++;
 
-	char *wgsl_str;
-	{
-		WGScopedMs timer(_creation_stats.tint_ms);
-		wgsl_str = _translate_spirv_to_wgsl(p_spv_ptr, p_spv_size);
-	}
+	const double tint_start = emscripten_get_now();
+	char *wgsl_str = _translate_spirv_to_wgsl(p_spv_ptr, p_spv_size);
+	const double tint_ms = emscripten_get_now() - tint_start;
+	_creation_stats.tint_ms += tint_ms;
+	print_verbose(vformat("WebGPU: Tint translated SPIR-V %016x (%d bytes) in %.1f ms", spv_hash, p_spv_size, tint_ms));
 
 	if (wgsl_str) {
 		_spv_to_wgsl_cache[spv_hash] = String(wgsl_str);
+		if (!disk_path.is_empty()) {
+			Ref<FileAccess> f = FileAccess::open(disk_path, FileAccess::WRITE);
+			if (f.is_valid()) {
+				f->store_buffer((const uint8_t *)wgsl_str, strlen(wgsl_str));
+			}
+		}
 	}
 
 	WEBGPU_DIAG({
@@ -9300,10 +9367,10 @@ void RenderingDeviceDriverWebGPU::begin_segment(uint32_t p_frame_index, uint32_t
 				perf.ring_overflows / f);
 		const WGCreationStats &cs = _creation_stats;
 		EM_ASM({
-			console.log('[PERF] create: shaders=' + $0 + '/' + $1.toFixed(0) + 'ms tint=' + $2 + '/' + $3.toFixed(0) + 'ms precompiled=' + $4 +
+			console.log('[PERF] create: shaders=' + $0 + '/' + $1.toFixed(0) + 'ms tint=' + $2 + '/' + $3.toFixed(0) + 'ms precompiled=' + $4 + ' disk=' + $11 +
 				' spec_modules=' + $5 + '/' + $6.toFixed(0) + 'ms render_pipelines=' + $7 + '/' + $8.toFixed(0) + 'ms compute_pipelines=' + $9 + '/' + $10.toFixed(0) + 'ms at=' + performance.now().toFixed(0));
 		}, cs.shaders, cs.shader_ms, _spv_to_wgsl_cache_misses, cs.tint_ms, _spv_to_wgsl_precompiled_hits,
-				cs.spec_modules, cs.spec_ms, cs.render_pipelines, cs.render_pipeline_ms, cs.compute_pipelines, cs.compute_pipeline_ms);
+				cs.spec_modules, cs.spec_ms, cs.render_pipelines, cs.render_pipeline_ms, cs.compute_pipelines, cs.compute_pipeline_ms, _spv_to_wgsl_disk_hits);
 		perf.reset();
 		perf.frames_since_log = 0;
 		perf.last_log_time = now;
