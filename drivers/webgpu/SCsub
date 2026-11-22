@@ -661,12 +661,6 @@ tint_sources = [tint_dir + f for f in tint_sources]
 env_tint = env_webgpu.Clone()
 env_tint.disable_warnings()
 
-# Web builds optimize for size, which makes runtime SPIR-V -> WGSL translation
-# much slower; it dominates first-visit startup. Build Tint and SPIRV-Tools for speed.
-if env["platform"] == "web" and env["optimize"].startswith("size"):
-    env_tint["OPTIMIZELEVEL"] = "-O3"
-    env_spirv_tools["OPTIMIZELEVEL"] = "-O3"
-
 # Tint requires C++20.
 if env_tint.get("is_msvc", False) or env.msvc:
     env_tint.Append(CXXFLAGS=["/std:c++20"])
