@@ -663,7 +663,8 @@ env_tint.disable_warnings()
 
 # Tint requires C++20.
 if env_tint.get("is_msvc", False) or env.msvc:
-    env_tint.Append(CXXFLAGS=["/std:c++20"])
+    # Conforming preprocessor for __VA_OPT__; Tint has large objects.
+    env_tint.Append(CXXFLAGS=["/std:c++20", "/Zc:preprocessor", "/bigobj"])
 else:
     env_tint.Append(CXXFLAGS=["-std=c++20"])
 
