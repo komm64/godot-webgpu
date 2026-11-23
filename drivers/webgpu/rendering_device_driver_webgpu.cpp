@@ -261,8 +261,7 @@ static char *_translate_spirv_to_wgsl(const uint8_t *p_spv_ptr, int p_spv_size) 
 	String error;
 	char *out = webgpu_spirv_to_wgsl(p_spv_ptr, p_spv_size, &error);
 	if (!out) {
-		error = error.replace("
-", " | ");
+		error = error.replace("\n", " | ");
 		if (error.length() > 1500) {
 			error = error.left(1500) + "... [truncated]";
 		}
