@@ -183,6 +183,7 @@
 
 #ifdef VULKAN_ENABLED
 #include "editor/shader/shader_baker/shader_baker_export_plugin_platform_vulkan.h"
+#include "editor/shader/shader_baker/shader_baker_export_plugin_platform_webgpu.h"
 #endif
 
 #ifdef D3D12_ENABLED
@@ -9517,6 +9518,10 @@ EditorNode::EditorNode() {
 	shader_baker_export_plugin_platform_metal.instantiate();
 	shader_baker_export_plugin->add_platform(shader_baker_export_plugin_platform_metal);
 #endif
+
+	Ref<ShaderBakerExportPluginPlatformWebGPU> shader_baker_export_plugin_platform_webgpu;
+	shader_baker_export_plugin_platform_webgpu.instantiate();
+	shader_baker_export_plugin->add_platform(shader_baker_export_plugin_platform_webgpu);
 
 	EditorExport::get_singleton()->add_export_plugin(shader_baker_export_plugin);
 

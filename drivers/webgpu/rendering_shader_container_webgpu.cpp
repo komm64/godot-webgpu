@@ -28,7 +28,7 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#ifdef WEBGPU_ENABLED
+// Built in editors too (shader baker), so not guarded by WEBGPU_ENABLED.
 
 #include "rendering_shader_container_webgpu.h"
 
@@ -106,4 +106,3 @@ RenderingShaderContainerWebGPU::RenderingShaderContainerWebGPU() {
 RenderingShaderContainerWebGPU::~RenderingShaderContainerWebGPU() {
 }
 
-#endif // WEBGPU_ENABLED

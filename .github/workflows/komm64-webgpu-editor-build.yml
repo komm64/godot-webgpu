@@ -1,0 +1,76 @@
+name: komm64 WebGPU Editor Build
+
+# Builds the Windows editor from this fork (manual dispatch). Baked WebGPU
+# shaders are keyed by the engine commit, so export with an editor built from
+# the same commit as the web template.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to build.
+        required: true
+        default: '4.7'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}|${{ inputs.ref }}
+  cancel-in-progress: true
+
+env:
+  SCONS_FLAGS: >-
+    production=yes
+    tests=no
+    debug_symbols=no
+    windows_subsystem=console
+    d3d12=no
+    accesskit=no
+  SCONS_CACHE_MSVC_CONFIG: true
+  PYTHONIOENCODING: utf8
+
+jobs:
+  windows-editor:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    name: Windows editor
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Restore build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: komm64-webgpu-windows-editor
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Compilation
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }}
+          platform: windows
+          target: editor
+
+      - name: Save build cache
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: komm64-webgpu-windows-editor
+        continue-on-error: true
+
+      - name: Prepare artifact
+        run: |
+          Remove-Item bin/build_deps -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
+
+      - name: Upload artifact
+        uses: ./.github/actions/upload-artifact
+        with:
+          name: komm64-webgpu-windows-editor

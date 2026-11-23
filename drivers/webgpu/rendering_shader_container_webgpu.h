@@ -30,7 +30,7 @@
 
 #pragma once
 
-#ifdef WEBGPU_ENABLED
+// Built in editors too (shader baker), so not guarded by WEBGPU_ENABLED.
 
 #include "servers/rendering/rendering_shader_container.h"
 
@@ -101,4 +101,3 @@ public:
 	}
 };
 
-#endif // WEBGPU_ENABLED
