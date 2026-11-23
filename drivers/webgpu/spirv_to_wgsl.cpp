@@ -56,6 +56,7 @@ char *webgpu_spirv_to_wgsl(const uint8_t *p_spv, int p_size, String *r_error) {
 	spv = spirv_preprocess::freeze_spec_constant_ops(spv);
 	spv = spirv_preprocess::rewrite_copy_logical(spv);
 	spv = spirv_preprocess::rewrite_terminate_invocation(spv);
+	spv = spirv_preprocess::rewrite_is_inf_nan(spv);
 	spv = spirv_preprocess::convert_push_constants_to_uniforms(spv);
 	spv = spirv_preprocess::split_combined_samplers(spv);
 	spv = spirv_preprocess::fix_depth2_images(spv).bytes;

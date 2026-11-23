@@ -32,6 +32,7 @@
 
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
+#include "core/templates/pair.h"
 #include "core/templates/vector.h"
 
 #include <cfloat>
@@ -2009,6 +2010,163 @@ Vector<uint8_t> strip_memory_barrier(const Vector<uint8_t> &p_bytes) {
 		pos += wc;
 	}
 
+	return out;
+}
+
+// ---- rewrite_is_inf_nan ----
+
+Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes) {
+	static constexpr uint16_t OP_IS_NAN = 156;
+	static constexpr uint16_t OP_IS_INF = 157;
+	static constexpr uint16_t OP_LOGICAL_OR = 166;
+	static constexpr uint16_t OP_F_ORD_LESS_THAN = 184;
+	static constexpr uint16_t OP_F_ORD_GREATER_THAN = 186;
+	static constexpr uint16_t OP_F_UNORD_NOT_EQUAL = 183;
+	static constexpr uint32_t FLT_MAX_BITS = 0x7f7fffff;
+	static constexpr uint32_t NEG_FLT_MAX_BITS = 0xff7fffff;
+
+	const int64_t len = p_bytes.size();
+	const uint32_t total_words = (uint32_t)(len / 4);
+	if (total_words < 5) {
+		return p_bytes;
+	}
+	const uint8_t *data = p_bytes.ptr();
+
+	// Pass 1: 32-bit float scalar and vector types, the type of every value
+	// defined in a function or as a constant, and where functions begin.
+	HashSet<uint32_t> f32_types;
+	HashMap<uint32_t, Pair<uint32_t, uint32_t>> vector_types; // id -> (component type, count)
+	HashMap<uint32_t, uint32_t> value_types; // value id -> type id
+	uint32_t first_function = 0;
+	bool found = false;
+	bool in_function = false;
+	uint32_t pos = 5;
+	while (pos < total_words) {
+		const uint32_t w0 = read_word(data, len, pos);
+		const uint32_t wc = w0 >> 16;
+		const uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			return p_bytes;
+		}
+		if (op == OP_TYPE_FLOAT && wc >= 3 && read_word(data, len, pos + 2) == 32) {
+			f32_types.insert(read_word(data, len, pos + 1));
+		} else if (op == OP_TYPE_VECTOR && wc >= 4) {
+			vector_types.insert(read_word(data, len, pos + 1), Pair<uint32_t, uint32_t>(read_word(data, len, pos + 2), read_word(data, len, pos + 3)));
+		} else if (op == OP_FUNCTION) {
+			in_function = true;
+			if (first_function == 0) {
+				first_function = pos;
+			}
+		} else if (op == OP_FUNCTION_END) {
+			in_function = false;
+		}
+		if (op == OP_IS_NAN || op == OP_IS_INF) {
+			found = true;
+		}
+		// Instructions with a result type keep it in word 1 and the result in
+		// word 2. Inside functions, skip the few that have neither.
+		const bool is_constant = op >= OP_CONSTANT_TRUE && op <= OP_SPEC_CONSTANT_OP;
+		const bool has_no_result = op == OP_STORE || op == OP_COPY_MEMORY || op == OP_COPY_MEMORY_SIZED || op == OP_ATOMIC_STORE ||
+				op == OP_KILL || op == OP_RETURN || op == OP_RETURN_VALUE || op == OP_FUNCTION_END || op == OP_TERMINATE_INVOCATION ||
+				(op >= 246 && op <= 251) || op == 255 || op == 8 || op == 317 || op == 99 || op == 224 || op == 225 || op == 218 || op == 219;
+		if (wc >= 3 && (is_constant || (in_function && !has_no_result))) {
+			value_types.insert(read_word(data, len, pos + 2), read_word(data, len, pos + 1));
+		}
+		pos += wc;
+	}
+	if (!found || first_function == 0) {
+		return p_bytes;
+	}
+
+	uint32_t bound = read_word(data, len, 3);
+	Vector<uint8_t> constants; // Inserted before the first function.
+	HashMap<uint32_t, Pair<uint32_t, uint32_t>> limits; // float type -> (FLT_MAX, -FLT_MAX) constants
+	auto limits_for = [&](uint32_t p_type) -> const Pair<uint32_t, uint32_t> * {
+		if (const Pair<uint32_t, uint32_t> *existing = limits.getptr(p_type)) {
+			return existing;
+		}
+		uint32_t scalar = p_type;
+		uint32_t count = 1;
+		if (const Pair<uint32_t, uint32_t> *vec = vector_types.getptr(p_type)) {
+			scalar = vec->first;
+			count = vec->second;
+		}
+		if (!f32_types.has(scalar)) {
+			return nullptr;
+		}
+		const uint32_t max_id = bound++;
+		const uint32_t min_id = bound++;
+		for (int i = 0; i < 2; i++) {
+			push_word(constants, (4u << 16) | OP_CONSTANT);
+			push_word(constants, scalar);
+			push_word(constants, i == 0 ? max_id : min_id);
+			push_word(constants, i == 0 ? FLT_MAX_BITS : NEG_FLT_MAX_BITS);
+		}
+		Pair<uint32_t, uint32_t> ids(max_id, min_id);
+		if (count > 1) {
+			ids = Pair<uint32_t, uint32_t>(bound, bound + 1);
+			bound += 2;
+			for (int i = 0; i < 2; i++) {
+				push_word(constants, ((3u + count) << 16) | OP_CONSTANT_COMPOSITE);
+				push_word(constants, p_type);
+				push_word(constants, i == 0 ? ids.first : ids.second);
+				for (uint32_t c = 0; c < count; c++) {
+					push_word(constants, i == 0 ? max_id : min_id);
+				}
+			}
+		}
+		return &limits.insert(p_type, ids)->value;
+	};
+
+	// Pass 2: rewrite. isnan(x) -> !(x == x); isinf(x) -> x > FLT_MAX || x < -FLT_MAX.
+	Vector<uint8_t> body;
+	pos = first_function;
+	while (pos < total_words) {
+		const uint32_t w0 = read_word(data, len, pos);
+		const uint32_t wc = w0 >> 16;
+		const uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (op == OP_IS_NAN && wc == 4) {
+			push_word(body, (5u << 16) | OP_F_UNORD_NOT_EQUAL);
+			push_word(body, read_word(data, len, pos + 1));
+			push_word(body, read_word(data, len, pos + 2));
+			push_word(body, read_word(data, len, pos + 3));
+			push_word(body, read_word(data, len, pos + 3));
+		} else if (op == OP_IS_INF && wc == 4) {
+			const uint32_t result_type = read_word(data, len, pos + 1);
+			const uint32_t result = read_word(data, len, pos + 2);
+			const uint32_t x = read_word(data, len, pos + 3);
+			const uint32_t *x_type = value_types.getptr(x);
+			const Pair<uint32_t, uint32_t> *ids = x_type ? limits_for(*x_type) : nullptr;
+			if (ids) {
+				const uint32_t above = bound++;
+				const uint32_t below = bound++;
+				const uint32_t compare[2][3] = { { OP_F_ORD_GREATER_THAN, above, ids->first }, { OP_F_ORD_LESS_THAN, below, ids->second } };
+				for (const uint32_t *c : compare) {
+					push_word(body, (5u << 16) | c[0]);
+					push_word(body, result_type);
+					push_word(body, c[1]);
+					push_word(body, x);
+					push_word(body, c[2]);
+				}
+				push_word(body, (5u << 16) | OP_LOGICAL_OR);
+				push_word(body, result_type);
+				push_word(body, result);
+				push_word(body, above);
+				push_word(body, below);
+			} else {
+				append_bytes(body, data, pos * 4, wc * 4); // Unknown operand type: leave it.
+			}
+		} else {
+			append_bytes(body, data, pos * 4, wc * 4);
+		}
+		pos += wc;
+	}
+
+	Vector<uint8_t> out;
+	append_bytes(out, data, 0, first_function * 4);
+	memcpy(out.ptrw() + 12, &bound, 4);
+	out.append_array(constants);
+	out.append_array(body);
 	return out;
 }
 

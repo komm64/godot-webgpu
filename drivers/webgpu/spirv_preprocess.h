@@ -97,6 +97,11 @@ Vector<uint8_t> strip_restrict_decoration(const Vector<uint8_t> &p_bytes);
 // workgroupBarrier() (from OpControlBarrier) covers synchronization.
 Vector<uint8_t> strip_memory_barrier(const Vector<uint8_t> &p_bytes);
 
+// Replace OpIsNan and OpIsInf (from GLSL isnan()/isinf()), which Tint does
+// not translate: isnan(x) becomes !(x == x) and isinf(x) becomes
+// x > FLT_MAX || x < -FLT_MAX, for 32-bit float scalars and vectors.
+Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes);
+
 // Replace non-finite (infinity, NaN) float constants with FLT_MAX/MIN.
 // Tint asserts std::isfinite on all float literal values.
 Vector<uint8_t> fix_nonfinite_literals(const Vector<uint8_t> &p_bytes);
