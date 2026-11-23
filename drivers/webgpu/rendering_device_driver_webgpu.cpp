@@ -3132,9 +3132,6 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 #ifndef __EMSCRIPTEN__
 			wgpuSurfacePresent(sc->surface);
 #endif
-			// Post-submit diagnostic clear DISABLED — only pre-submit CYAN is active.
-			// This lets us see if Godot's submit overwrites the cyan.
-
 			// Release the surface texture and view so the browser can composite the
 			// frame within this requestAnimationFrame callback. If we hold onto the
 			// texture reference until next frame's acquire, the browser won't present
@@ -7987,40 +7984,10 @@ void RenderingDeviceDriverWebGPU::command_bind_render_uniform_sets(CommandBuffer
 
 	WGShader *pipeline_shader = cmd->render_state.current_pipeline ? cmd->render_state.current_pipeline->shader : nullptr;
 
-	// Diagnostic: log texture bindings and push constant info on swap chain pass.
 	// Invalidate bind group tracking if the pipeline shader changed.
 	if (pipeline_shader != cmd->bound_shader) {
 		cmd->invalidate_bind_groups();
 		cmd->bound_shader = pipeline_shader;
-	}
-
-	// Diagnostic: detect the sync-scope conflict that's causing the
-	// "includes writable usage and another usage in the same synchronization
-	// scope" validation error. This fires whenever a bound texture's parent
-	// matches a framebuffer attachment's parent. Limited to a few prints so
-	// we don't spam the console after a match.
-	static int _sync_conflict_log_count = 0;
-	WGFramebuffer *_cur_fb = cmd->render_state.framebuffer;
-	if (_cur_fb && _sync_conflict_log_count < 20) {
-		for (uint32_t i = 0; i < p_set_count; i++) {
-			WGUniformSet *us = (WGUniformSet *)(p_uniform_sets[i].id);
-			if (!us) continue;
-			for (const KeyValue<uint32_t, WGTexture *> &kv : us->bound_textures) {
-				WGTexture *btex = kv.value;
-				if (!btex || !btex->view_source) continue;
-				for (uint32_t a = 0; a < _cur_fb->attachments.size(); a++) {
-					WGTexture *atex = _cur_fb->attachments[a];
-					if (!atex) continue;
-					WGPUTexture a_src = atex->gpu_handle();
-					if (a_src == btex->view_source) {
-						_sync_conflict_log_count++;
-						if (_sync_conflict_log_count >= 20) break;
-					}
-				}
-				if (_sync_conflict_log_count >= 20) break;
-			}
-			if (_sync_conflict_log_count >= 20) break;
-		}
 	}
 
 	// Task 7.5: Unpack 4-bit frame indices from p_dynamic_offsets as we walk the sets.
@@ -9586,6 +9553,10 @@ void RenderingDeviceDriverWebGPU::set_object_name(ObjectType p_type, ID p_driver
 			} else if (pw->type == WGPipelineWrapper::COMPUTE && pw->compute_handle) {
 				wgpuComputePipelineSetLabel(pw->compute_handle, label);
 			}
+		} break;
+		case OBJECT_TYPE_ACCELERATION_STRUCTURE:
+		case OBJECT_TYPE_RAYTRACING_PIPELINE: {
+			// WebGPU has no ray tracing.
 		} break;
 	}
 }
