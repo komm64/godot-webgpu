@@ -12,6 +12,5 @@ if env["d3d12"]:
 if env["metal"]:
     env.add_source_files(env.editor_sources, "shader_baker_export_plugin_platform_metal.cpp")
 
-# WebGPU shader containers hold SPIR-V only, so every editor can bake them for the web.
+# Every editor can bake WebGPU shaders for the web (drivers/webgpu builds the SPIR-V to WGSL part).
 env.add_source_files(env.editor_sources, "shader_baker_export_plugin_platform_webgpu.cpp")
-env.add_source_files(env.editor_sources, "#drivers/webgpu/rendering_shader_container_webgpu.cpp")

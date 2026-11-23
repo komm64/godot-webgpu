@@ -710,6 +710,23 @@ env_tint_wrapper.add_source_files(tint_obj, ["#drivers/webgpu/tint_wrapper.cpp"]
 # WebGPU driver sources
 # =============================================================================
 
+if not env["webgpu"]:
+    # Editor without the driver: only what the shader baker needs to turn
+    # SPIR-V into WGSL inside WebGPU shader containers.
+    env_webgpu.Prepend(CPPPATH=[spirv_tools_dir + "include/", spirv_headers_dir + "include/"])
+    env_webgpu.Append(CPPDEFINES=["WEBGPU_BAKE_WGSL"])
+    env_webgpu.add_source_files(
+        env.drivers_sources,
+        [
+            "#drivers/webgpu/spirv_preprocess.cpp",
+            "#drivers/webgpu/spirv_to_wgsl.cpp",
+            "#drivers/webgpu/rendering_shader_container_webgpu.cpp",
+        ],
+    )
+    env.drivers_sources += spirv_tools_obj
+    env.drivers_sources += tint_obj
+    Return()
+
 # Driver sources only need SPIRV-Tools/Headers for spirv_preprocess; they
 # never include Tint headers directly (that goes through tint_wrapper.h).
 env_webgpu.Prepend(

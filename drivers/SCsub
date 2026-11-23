@@ -64,6 +64,9 @@ if env["webgpu"]:
         print_error("Target platform '{}' does not support the WebGPU rendering driver".format(env["platform"]))
         Exit(255)
     SConscript("webgpu/SCsub")
+elif env.editor_build:
+    # Editors bake WebGPU shaders for web exports (SPIR-V to WGSL only, no driver).
+    SConscript("webgpu/SCsub")
 
 # Input drivers
 if env["sdl"] and env["platform"] in ["linuxbsd", "macos", "windows", "ios", "visionos"]:

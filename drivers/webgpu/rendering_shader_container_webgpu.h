@@ -40,8 +40,9 @@ class RenderingShaderContainerWebGPU : public RenderingShaderContainer {
 public:
 	// Format identifier for WebGPU shader containers.
 	static constexpr uint32_t FORMAT_WEBGPU = 0x57475055; // "WGPU"
-	static constexpr uint32_t FORMAT_VERSION = 1;
+	static constexpr uint32_t FORMAT_VERSION = 2; // 2: per-stage WGSL.
 	static constexpr uint32_t NO_PUSH_CONSTANTS = UINT32_MAX;
+	static constexpr uint32_t HEADER_FLAG_HAS_WGSL = 1; // Each stage is followed by its WGSL.
 
 	struct HeaderData {
 		uint32_t push_constant_bind_group = NO_PUSH_CONSTANTS; // UINT32_MAX = no push constants.
@@ -51,6 +52,9 @@ public:
 
 protected:
 	HeaderData header_data;
+	// WGSL per stage (same order as shaders). Filled only when the editor bakes
+	// shaders; the web driver translates the SPIR-V itself when it is empty.
+	LocalVector<CharString> stage_wgsl;
 
 	// --- RenderingShaderContainer overrides ---
 
@@ -65,10 +69,14 @@ protected:
 	// Serialization overrides for extra header data.
 	virtual uint32_t _from_bytes_header_extra_data(const uint8_t *p_bytes) override;
 	virtual uint32_t _to_bytes_header_extra_data(uint8_t *p_bytes) const override;
+	virtual uint32_t _from_bytes_shader_extra_data(const uint8_t *p_bytes, uint32_t p_index) override;
+	virtual uint32_t _to_bytes_shader_extra_data(uint8_t *p_bytes, uint32_t p_index) const override;
 
 public:
 	uint32_t get_push_constant_bind_group() const { return header_data.push_constant_bind_group; }
 	uint32_t get_push_constant_binding() const { return header_data.push_constant_binding; }
+	// Empty when the container has no WGSL for that stage.
+	CharString get_stage_wgsl(uint32_t p_index) const { return p_index < stage_wgsl.size() ? stage_wgsl[p_index] : CharString(); }
 	bool has_push_constants() const { return header_data.push_constant_bind_group != NO_PUSH_CONSTANTS; }
 
 	RenderingShaderContainerWebGPU();

@@ -32,6 +32,12 @@
 
 #include "rendering_shader_container_webgpu.h"
 
+#ifdef WEBGPU_BAKE_WGSL
+#include "spirv_to_wgsl.h"
+
+#include <cstdlib>
+#endif
+
 // =========================================================================
 // SPIR-V Storage
 // =========================================================================
@@ -50,6 +56,7 @@
 bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p_shader) {
 	const uint32_t stage_count = p_shader.shader_stages.size();
 	shaders.resize(stage_count);
+	stage_wgsl.resize(stage_count);
 
 	for (uint32_t i = 0; i < stage_count; i++) {
 		const ReflectShaderStage &stage = p_shader.shader_stages[i];
@@ -59,6 +66,19 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 		shaders.write[i].code_compression_flags = 0; // No compression.
 		shaders.write[i].code_decompressed_size = 0; // 0 = not compressed (use raw bytes).
 		shaders.write[i].code_compressed_bytes = spirv_bytes;
+
+#ifdef WEBGPU_BAKE_WGSL
+		header_data.flags |= HEADER_FLAG_HAS_WGSL;
+		// Baking: translate now so the browser skips Tint for this stage.
+		String error;
+		char *wgsl = webgpu_spirv_to_wgsl(spirv_bytes.ptr(), spirv_bytes.size(), &error);
+		if (wgsl) {
+			stage_wgsl[i] = CharString(wgsl);
+			free(wgsl);
+		} else {
+			WARN_PRINT(vformat("WebGPU: SPIR-V to WGSL failed for '%s', left to the browser: %s", String(shader_name.get_data()), error));
+		}
+#endif
 	}
 
 	// Decide push constant bind group slot.
@@ -94,6 +114,42 @@ uint32_t RenderingShaderContainerWebGPU::_to_bytes_header_extra_data(uint8_t *p_
 		memcpy(p_bytes, &header_data, sizeof(HeaderData));
 	}
 	return sizeof(HeaderData);
+}
+
+// Per stage: uint32 length, then the WGSL bytes padded to 4.
+uint32_t RenderingShaderContainerWebGPU::_from_bytes_shader_extra_data(const uint8_t *p_bytes, uint32_t p_index) {
+	if (!(header_data.flags & HEADER_FLAG_HAS_WGSL)) {
+		return 0;
+	}
+	uint32_t length = 0;
+	memcpy(&length, p_bytes, sizeof(uint32_t));
+	if (stage_wgsl.size() <= p_index) {
+		stage_wgsl.resize(p_index + 1);
+	}
+	CharString &wgsl = stage_wgsl[p_index];
+	wgsl = CharString();
+	if (length > 0) {
+		wgsl.resize_uninitialized(length + 1);
+		memcpy(wgsl.ptrw(), p_bytes + sizeof(uint32_t), length);
+		wgsl.ptrw()[length] = 0;
+	}
+	return sizeof(uint32_t) + ((length + 3u) & ~3u);
+}
+
+uint32_t RenderingShaderContainerWebGPU::_to_bytes_shader_extra_data(uint8_t *p_bytes, uint32_t p_index) const {
+	if (!(header_data.flags & HEADER_FLAG_HAS_WGSL)) {
+		return 0;
+	}
+	const uint32_t length = p_index < stage_wgsl.size() ? uint32_t(stage_wgsl[p_index].length()) : 0;
+	const uint32_t size = sizeof(uint32_t) + ((length + 3u) & ~3u);
+	if (p_bytes) {
+		memset(p_bytes, 0, size);
+		memcpy(p_bytes, &length, sizeof(uint32_t));
+		if (length > 0) {
+			memcpy(p_bytes + sizeof(uint32_t), stage_wgsl[p_index].get_data(), length);
+		}
+	}
+	return size;
 }
 
 // =========================================================================

@@ -408,6 +408,19 @@ void EditorExportPlatformWeb::get_export_options(List<ExportOption> *r_options) 
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "threads/godot_pool_size"), 4));
 }
 
+String EditorExportPlatformWeb::get_export_option_warning(const EditorExportPreset *p_preset, const StringName &p_name) const {
+	if (p_name == "shader_baker/enabled" && bool(p_preset->get("shader_baker/enabled"))) {
+		// Same check as desktop exports, against the renderer the web export uses.
+		const String export_renderer = GLOBAL_GET("rendering/renderer/rendering_method.web");
+		if (OS::get_singleton()->get_current_rendering_method() == "gl_compatibility") {
+			return TTR("\"Shader Baker\" is not supported when using the Compatibility renderer.");
+		} else if (OS::get_singleton()->get_current_rendering_method() != export_renderer) {
+			return vformat(TTR("The editor is currently using a different renderer than what the target platform will use. \"Shader Baker\" won't be able to include core shaders. Switch to the \"%s\" renderer temporarily to fix this."), export_renderer);
+		}
+	}
+	return EditorExportPlatform::get_export_option_warning(p_preset, p_name);
+}
+
 bool EditorExportPlatformWeb::get_export_option_visibility(const EditorExportPreset *p_preset, const String &p_option) const {
 	bool advanced_options_enabled = p_preset->are_advanced_options_enabled();
 	if (p_option == "custom_template/debug" || p_option == "custom_template/release") {
