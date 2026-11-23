@@ -32,7 +32,6 @@
 
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
-#include "core/templates/pair.h"
 #include "core/templates/vector.h"
 
 #include <cfloat>
@@ -2034,8 +2033,16 @@ Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes) {
 
 	// Pass 1: 32-bit float scalar and vector types, the type of every value
 	// defined in a function or as a constant, and where functions begin.
+	struct VectorType {
+		uint32_t component = 0;
+		uint32_t count = 0;
+	};
+	struct Limits {
+		uint32_t max = 0; // FLT_MAX
+		uint32_t min = 0; // -FLT_MAX
+	};
 	HashSet<uint32_t> f32_types;
-	HashMap<uint32_t, Pair<uint32_t, uint32_t>> vector_types; // id -> (component type, count)
+	HashMap<uint32_t, VectorType> vector_types;
 	HashMap<uint32_t, uint32_t> value_types; // value id -> type id
 	uint32_t first_function = 0;
 	bool found = false;
@@ -2051,7 +2058,7 @@ Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes) {
 		if (op == OP_TYPE_FLOAT && wc >= 3 && read_word(data, len, pos + 2) == 32) {
 			f32_types.insert(read_word(data, len, pos + 1));
 		} else if (op == OP_TYPE_VECTOR && wc >= 4) {
-			vector_types.insert(read_word(data, len, pos + 1), Pair<uint32_t, uint32_t>(read_word(data, len, pos + 2), read_word(data, len, pos + 3)));
+			vector_types.insert(read_word(data, len, pos + 1), VectorType{ read_word(data, len, pos + 2), read_word(data, len, pos + 3) });
 		} else if (op == OP_FUNCTION) {
 			in_function = true;
 			if (first_function == 0) {
@@ -2080,16 +2087,16 @@ Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes) {
 
 	uint32_t bound = read_word(data, len, 3);
 	Vector<uint8_t> constants; // Inserted before the first function.
-	HashMap<uint32_t, Pair<uint32_t, uint32_t>> limits; // float type -> (FLT_MAX, -FLT_MAX) constants
-	auto limits_for = [&](uint32_t p_type) -> const Pair<uint32_t, uint32_t> * {
-		if (const Pair<uint32_t, uint32_t> *existing = limits.getptr(p_type)) {
+	HashMap<uint32_t, Limits> limits; // float type -> its FLT_MAX and -FLT_MAX constants
+	auto limits_for = [&](uint32_t p_type) -> const Limits * {
+		if (const Limits *existing = limits.getptr(p_type)) {
 			return existing;
 		}
 		uint32_t scalar = p_type;
 		uint32_t count = 1;
-		if (const Pair<uint32_t, uint32_t> *vec = vector_types.getptr(p_type)) {
-			scalar = vec->first;
-			count = vec->second;
+		if (const VectorType *vec = vector_types.getptr(p_type)) {
+			scalar = vec->component;
+			count = vec->count;
 		}
 		if (!f32_types.has(scalar)) {
 			return nullptr;
@@ -2102,20 +2109,21 @@ Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes) {
 			push_word(constants, i == 0 ? max_id : min_id);
 			push_word(constants, i == 0 ? FLT_MAX_BITS : NEG_FLT_MAX_BITS);
 		}
-		Pair<uint32_t, uint32_t> ids(max_id, min_id);
+		Limits ids{ max_id, min_id };
 		if (count > 1) {
-			ids = Pair<uint32_t, uint32_t>(bound, bound + 1);
+			ids = Limits{ bound, bound + 1 };
 			bound += 2;
 			for (int i = 0; i < 2; i++) {
 				push_word(constants, ((3u + count) << 16) | OP_CONSTANT_COMPOSITE);
 				push_word(constants, p_type);
-				push_word(constants, i == 0 ? ids.first : ids.second);
+				push_word(constants, i == 0 ? ids.max : ids.min);
 				for (uint32_t c = 0; c < count; c++) {
 					push_word(constants, i == 0 ? max_id : min_id);
 				}
 			}
 		}
-		return &limits.insert(p_type, ids)->value;
+		limits.insert(p_type, ids);
+		return limits.getptr(p_type);
 	};
 
 	// Pass 2: rewrite. isnan(x) -> !(x == x); isinf(x) -> x > FLT_MAX || x < -FLT_MAX.
@@ -2136,11 +2144,11 @@ Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes) {
 			const uint32_t result = read_word(data, len, pos + 2);
 			const uint32_t x = read_word(data, len, pos + 3);
 			const uint32_t *x_type = value_types.getptr(x);
-			const Pair<uint32_t, uint32_t> *ids = x_type ? limits_for(*x_type) : nullptr;
+			const Limits *ids = x_type ? limits_for(*x_type) : nullptr;
 			if (ids) {
 				const uint32_t above = bound++;
 				const uint32_t below = bound++;
-				const uint32_t compare[2][3] = { { OP_F_ORD_GREATER_THAN, above, ids->first }, { OP_F_ORD_LESS_THAN, below, ids->second } };
+				const uint32_t compare[2][3] = { { OP_F_ORD_GREATER_THAN, above, ids->max }, { OP_F_ORD_LESS_THAN, below, ids->min } };
 				for (const uint32_t *c : compare) {
 					push_word(body, (5u << 16) | c[0]);
 					push_word(body, result_type);
@@ -2165,8 +2173,8 @@ Vector<uint8_t> rewrite_is_inf_nan(const Vector<uint8_t> &p_bytes) {
 	Vector<uint8_t> out;
 	append_bytes(out, data, 0, first_function * 4);
 	memcpy(out.ptrw() + 12, &bound, 4);
-	out.append_array(constants);
-	out.append_array(body);
+	append_bytes(out, constants.ptr(), 0, constants.size());
+	append_bytes(out, body.ptr(), 0, body.size());
 	return out;
 }
 
