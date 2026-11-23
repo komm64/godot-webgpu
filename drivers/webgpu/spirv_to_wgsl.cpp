@@ -52,22 +52,7 @@ char *webgpu_spirv_to_wgsl(const uint8_t *p_spv, int p_size, String *r_error) {
 	spv.resize(p_size);
 	memcpy(spv.ptrw(), p_spv, p_size);
 
-	spv = spirv_preprocess::inline_opaque_functions(spv);
-	spv = spirv_preprocess::freeze_spec_constant_ops(spv);
-	spv = spirv_preprocess::rewrite_copy_logical(spv);
-	spv = spirv_preprocess::rewrite_terminate_invocation(spv);
-	spv = spirv_preprocess::rewrite_is_inf_nan(spv);
-	spv = spirv_preprocess::convert_push_constants_to_uniforms(spv);
-	spv = spirv_preprocess::split_combined_samplers(spv);
-	spv = spirv_preprocess::fix_depth2_images(spv).bytes;
-	spv = spirv_preprocess::negate_position_y(spv);
-	spv = spirv_preprocess::strip_restrict_decoration(spv);
-	spv = spirv_preprocess::strip_memory_barrier(spv);
-	spv = spirv_preprocess::fix_nonfinite_literals(spv);
-	spv = spirv_preprocess::flatten_binding_arrays(spv);
-	spv = spirv_preprocess::infer_readonly_storage(spv);
-	spv = spirv_preprocess::strip_writeonly_storage_decoration(spv);
-	spv = spirv_preprocess::eliminate_dead_resources(spv);
+	spv = spirv_preprocess::prepare_for_tint(spv);
 
 	std::vector<uint32_t> words(spv.size() / 4);
 	memcpy(words.data(), spv.ptr(), spv.size());

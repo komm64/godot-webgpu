@@ -190,4 +190,8 @@ Vector<uint8_t> strip_writeonly_storage_decoration(const Vector<uint8_t> &p_byte
 // only ever needs to react to, the final preprocessed form.
 Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes);
 
+// Run every pass above, in order, to turn glslang SPIR-V into input Tint
+// accepts. The driver and the tint_cli precompile tool both use this.
+Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes);
+
 } // namespace spirv_preprocess

@@ -3028,4 +3028,27 @@ Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes) {
 	return out;
 }
 
+// ---- prepare_for_tint ----
+
+Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes) {
+	Vector<uint8_t> spv = p_bytes;
+	spv = inline_opaque_functions(spv);
+	spv = freeze_spec_constant_ops(spv);
+	spv = rewrite_copy_logical(spv);
+	spv = rewrite_terminate_invocation(spv);
+	spv = rewrite_is_inf_nan(spv);
+	spv = convert_push_constants_to_uniforms(spv);
+	spv = split_combined_samplers(spv);
+	spv = fix_depth2_images(spv).bytes;
+	spv = negate_position_y(spv);
+	spv = strip_restrict_decoration(spv);
+	spv = strip_memory_barrier(spv);
+	spv = fix_nonfinite_literals(spv);
+	spv = flatten_binding_arrays(spv);
+	spv = infer_readonly_storage(spv);
+	spv = strip_writeonly_storage_decoration(spv);
+	spv = eliminate_dead_resources(spv);
+	return spv;
+}
+
 } // namespace spirv_preprocess
