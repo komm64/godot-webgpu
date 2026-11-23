@@ -1382,6 +1382,19 @@ void RenderingDeviceDriverWebGPU::buffer_initiate_async_map(BufferID p_buffer) {
 	}
 }
 
+bool RenderingDeviceDriverWebGPU::buffer_map_ready(BufferID p_buffer) {
+	WGBuffer *buf = (WGBuffer *)(p_buffer.id);
+	if (!buf || !buf->is_readback || !buf->handle || !buf->map_pending) {
+		return true;
+	}
+	// Deliver the map callback if the browser has resolved the map already.
+	WGPUInstance inst = context_driver ? context_driver->get_instance() : nullptr;
+	if (inst) {
+		wgpuInstanceProcessEvents(inst);
+	}
+	return !buf->map_pending || wgpuBufferGetMapState(buf->handle) == WGPUBufferMapState_Mapped;
+}
+
 uint32_t RenderingDeviceDriverWebGPU::texture_get_gpu_pixel_size(TextureID p_texture) {
 	WGTexture *tex = (WGTexture *)(p_texture.id);
 	if (!tex || tex->rd_format == DATA_FORMAT_MAX) {

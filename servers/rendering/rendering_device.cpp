@@ -1011,6 +1011,9 @@ void RenderingDevice::_staging_buffer_execute_required_action(StagingBuffers &p_
 
 			// Clear the whole staging buffer.
 			for (int i = 0; i < p_staging_buffers.blocks.size(); i++) {
+				if (p_staging_buffers.blocks[i].frame_used == STAGING_BLOCK_HELD) {
+					continue;
+				}
 				p_staging_buffers.blocks.write[i].frame_used = 0;
 				p_staging_buffers.blocks.write[i].fill_amount = 0;
 			}
@@ -1026,6 +1029,9 @@ void RenderingDevice::_staging_buffer_execute_required_action(StagingBuffers &p_
 				int block_idx = (i + p_staging_buffers.current) % p_staging_buffers.blocks.size();
 				if (p_staging_buffers.blocks[block_idx].frame_used == frames_drawn) {
 					break; // Ok, we reached something from this frame, abort.
+				}
+				if (p_staging_buffers.blocks[block_idx].frame_used == STAGING_BLOCK_HELD) {
+					continue;
 				}
 
 				p_staging_buffers.blocks.write[block_idx].frame_used = 0;
@@ -8571,101 +8577,148 @@ void RenderingDevice::_execute_frame(bool p_present) {
 }
 
 void RenderingDevice::_stall_for_frame(uint32_t p_frame) {
-	thread_local PackedByteArray packed_byte_array;
-
 	if (frames[p_frame].fence_signaled) {
 		GodotProfileZoneGroupedFirst(_profile_zone, "driver->fence_wait");
 		driver->fence_wait(frames[p_frame].fence);
 		frames[p_frame].fence_signaled = false;
 
-		// Flush any pending requests for asynchronous buffer downloads.
-		if (!frames[p_frame].download_buffer_get_data_requests.is_empty()) {
-			GodotProfileZoneGrouped(_profile_zone, "flush asynchronous buffer downloads");
-			for (uint32_t i = 0; i < frames[p_frame].download_buffer_get_data_requests.size(); i++) {
-				const BufferGetDataRequest &request = frames[p_frame].download_buffer_get_data_requests[i];
-				packed_byte_array.resize(request.size);
+		DownloadBatch &batch = frames[p_frame];
+		if (!batch.download_buffer_get_data_requests.is_empty() || !batch.download_texture_get_data_requests.is_empty()) {
+			if (deferred_downloads.is_empty() && _download_batch_ready(batch)) {
+				_download_batch_flush(batch);
+			} else {
+				// The data has not arrived yet. Keep the requests (in order) and
+				// their staging blocks until it does.
+				_download_batch_hold_blocks(batch, true);
+				deferred_downloads.push_back(std::move(batch));
+				batch = DownloadBatch();
+			}
+		}
+	}
 
-				uint32_t array_offset = 0;
-				for (uint32_t j = 0; j < request.frame_local_count; j++) {
-					uint32_t local_index = request.frame_local_index + j;
-					const RDD::BufferCopyRegion &region = frames[p_frame].download_buffer_copy_regions[local_index];
-					uint8_t *buffer_data = driver->buffer_map(frames[p_frame].download_buffer_staging_buffers[local_index]);
-					memcpy(&packed_byte_array.write[array_offset], &buffer_data[region.dst_offset], region.size);
-					driver->buffer_unmap(frames[p_frame].download_buffer_staging_buffers[local_index]);
-					array_offset += region.size;
-				}
+	while (!deferred_downloads.is_empty() && _download_batch_ready(deferred_downloads[0])) {
+		_download_batch_hold_blocks(deferred_downloads[0], false);
+		_download_batch_flush(deferred_downloads[0]);
+		deferred_downloads.remove_at(0);
+	}
+}
 
-				request.callback.call(packed_byte_array);
+bool RenderingDevice::_download_batch_ready(const DownloadBatch &p_batch) {
+	for (RDD::BufferID buffer : p_batch.download_buffer_staging_buffers) {
+		if (!driver->buffer_map_ready(buffer)) {
+			return false;
+		}
+	}
+	for (RDD::BufferID buffer : p_batch.download_texture_staging_buffers) {
+		if (!driver->buffer_map_ready(buffer)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void RenderingDevice::_download_batch_hold_blocks(const DownloadBatch &p_batch, bool p_hold) {
+	for (StagingBufferBlock &block : download_staging_buffers.blocks) {
+		if (p_batch.download_buffer_staging_buffers.has(block.driver_id) || p_batch.download_texture_staging_buffers.has(block.driver_id)) {
+			// A held block looks in use to _staging_buffer_allocate(), so nothing new is copied into it.
+			block.frame_used = p_hold ? STAGING_BLOCK_HELD : 0;
+			block.fill_amount = 0;
+		}
+	}
+}
+
+void RenderingDevice::_download_batch_flush(DownloadBatch &p_batch) {
+	thread_local PackedByteArray packed_byte_array;
+
+	GodotProfileZoneGroupedFirst(_profile_zone, "flush asynchronous downloads");
+
+	// Flush any pending requests for asynchronous buffer downloads.
+	if (!p_batch.download_buffer_get_data_requests.is_empty()) {
+		GodotProfileZoneGrouped(_profile_zone, "flush asynchronous buffer downloads");
+		for (uint32_t i = 0; i < p_batch.download_buffer_get_data_requests.size(); i++) {
+			const BufferGetDataRequest &request = p_batch.download_buffer_get_data_requests[i];
+			packed_byte_array.resize(request.size);
+
+			uint32_t array_offset = 0;
+			for (uint32_t j = 0; j < request.frame_local_count; j++) {
+				uint32_t local_index = request.frame_local_index + j;
+				const RDD::BufferCopyRegion &region = p_batch.download_buffer_copy_regions[local_index];
+				uint8_t *buffer_data = driver->buffer_map(p_batch.download_buffer_staging_buffers[local_index]);
+				memcpy(&packed_byte_array.write[array_offset], &buffer_data[region.dst_offset], region.size);
+				driver->buffer_unmap(p_batch.download_buffer_staging_buffers[local_index]);
+				array_offset += region.size;
 			}
 
-			frames[p_frame].download_buffer_staging_buffers.clear();
-			frames[p_frame].download_buffer_copy_regions.clear();
-			frames[p_frame].download_buffer_get_data_requests.clear();
+			request.callback.call(packed_byte_array);
 		}
 
-		// Flush any pending requests for asynchronous texture downloads.
-		if (!frames[p_frame].download_texture_get_data_requests.is_empty()) {
-			GodotProfileZoneGrouped(_profile_zone, "flush asynchronous texture downloads");
-			for (uint32_t i = 0; i < frames[p_frame].download_texture_get_data_requests.size(); i++) {
-				const TextureGetDataRequest &request = frames[p_frame].download_texture_get_data_requests[i];
-				uint32_t texture_size = get_image_format_required_size(request.format, request.width, request.height, request.depth, request.mipmaps);
-				packed_byte_array.resize(texture_size);
+		p_batch.download_buffer_staging_buffers.clear();
+		p_batch.download_buffer_copy_regions.clear();
+		p_batch.download_buffer_get_data_requests.clear();
+	}
 
-				// Find the block size of the texture's format.
-				uint32_t block_w = 0;
-				uint32_t block_h = 0;
-				get_compressed_image_format_block_dimensions(request.format, block_w, block_h);
+	// Flush any pending requests for asynchronous texture downloads.
+	if (!p_batch.download_texture_get_data_requests.is_empty()) {
+		GodotProfileZoneGrouped(_profile_zone, "flush asynchronous texture downloads");
+		for (uint32_t i = 0; i < p_batch.download_texture_get_data_requests.size(); i++) {
+			const TextureGetDataRequest &request = p_batch.download_texture_get_data_requests[i];
+			uint32_t texture_size = get_image_format_required_size(request.format, request.width, request.height, request.depth, request.mipmaps);
+			packed_byte_array.resize(texture_size);
 
-				uint32_t block_size = get_compressed_image_format_block_byte_size(request.format);
-				uint32_t pixel_size = get_image_format_pixel_size(request.format);
-				uint32_t region_size = texture_download_region_size_px;
+			// Find the block size of the texture's format.
+			uint32_t block_w = 0;
+			uint32_t block_h = 0;
+			get_compressed_image_format_block_dimensions(request.format, block_w, block_h);
 
-				for (uint32_t j = 0; j < request.frame_local_count; j++) {
-					uint32_t local_index = request.frame_local_index + j;
-					const RDD::BufferTextureCopyRegion &region = frames[p_frame].download_buffer_texture_copy_regions[local_index];
-					uint32_t w = STEPIFY(request.width >> region.texture_subresource.mipmap, block_w);
-					uint32_t h = STEPIFY(request.height >> region.texture_subresource.mipmap, block_h);
-					uint32_t region_w = MIN(region_size, w - region.texture_offset.x);
-					uint32_t region_h = MIN(region_size, h - region.texture_offset.y);
+			uint32_t block_size = get_compressed_image_format_block_byte_size(request.format);
+			uint32_t pixel_size = get_image_format_pixel_size(request.format);
+			uint32_t region_size = texture_download_region_size_px;
 
-					uint8_t *buffer_data = driver->buffer_map(frames[p_frame].download_texture_staging_buffers[local_index]);
-					const uint8_t *read_ptr = buffer_data + region.buffer_offset;
-					uint8_t *write_ptr = packed_byte_array.ptrw() + frames[p_frame].download_texture_mipmap_offsets[local_index];
-					uint32_t unit_size = pixel_size;
-					if (block_w != 1 || block_h != 1) {
-						unit_size = block_size;
-					}
+			for (uint32_t j = 0; j < request.frame_local_count; j++) {
+				uint32_t local_index = request.frame_local_index + j;
+				const RDD::BufferTextureCopyRegion &region = p_batch.download_buffer_texture_copy_regions[local_index];
+				uint32_t w = STEPIFY(request.width >> region.texture_subresource.mipmap, block_w);
+				uint32_t h = STEPIFY(request.height >> region.texture_subresource.mipmap, block_h);
+				uint32_t region_w = MIN(region_size, w - region.texture_offset.x);
+				uint32_t region_h = MIN(region_size, h - region.texture_offset.y);
 
-					write_ptr += ((region.texture_offset.y / block_h) * (w / block_w) + (region.texture_offset.x / block_w)) * unit_size;
-
-					if (request.gpu_pixel_size > 0 && block_w == 1 && block_h == 1) {
-						// Driver promoted the format (e.g. R8→R32Float). The staging
-						// buffer holds GPU-format data that must be converted back.
-						uint32_t dst_pitch = (w / block_w) * unit_size;
-						driver->texture_readback_convert(request.driver_texture_id,
-								read_ptr, region.row_pitch,
-								write_ptr, dst_pitch,
-								region_w, region_h);
-					} else {
-						for (uint32_t y = region_h / block_h; y > 0; y--) {
-							memcpy(write_ptr, read_ptr, (region_w / block_w) * unit_size);
-							write_ptr += (w / block_w) * unit_size;
-							read_ptr += region.row_pitch;
-						}
-					}
-
-					driver->buffer_unmap(frames[p_frame].download_texture_staging_buffers[local_index]);
+				uint8_t *buffer_data = driver->buffer_map(p_batch.download_texture_staging_buffers[local_index]);
+				const uint8_t *read_ptr = buffer_data + region.buffer_offset;
+				uint8_t *write_ptr = packed_byte_array.ptrw() + p_batch.download_texture_mipmap_offsets[local_index];
+				uint32_t unit_size = pixel_size;
+				if (block_w != 1 || block_h != 1) {
+					unit_size = block_size;
 				}
 
-				request.callback.call(packed_byte_array);
+				write_ptr += ((region.texture_offset.y / block_h) * (w / block_w) + (region.texture_offset.x / block_w)) * unit_size;
+
+				if (request.gpu_pixel_size > 0 && block_w == 1 && block_h == 1) {
+					// Driver promoted the format (e.g. R8→R32Float). The staging
+					// buffer holds GPU-format data that must be converted back.
+					uint32_t dst_pitch = (w / block_w) * unit_size;
+					driver->texture_readback_convert(request.driver_texture_id,
+							read_ptr, region.row_pitch,
+							write_ptr, dst_pitch,
+							region_w, region_h);
+				} else {
+					for (uint32_t y = region_h / block_h; y > 0; y--) {
+						memcpy(write_ptr, read_ptr, (region_w / block_w) * unit_size);
+						write_ptr += (w / block_w) * unit_size;
+						read_ptr += region.row_pitch;
+					}
+				}
+
+				driver->buffer_unmap(p_batch.download_texture_staging_buffers[local_index]);
 			}
 
-			GodotProfileZoneGrouped(_profile_zone, "clear buffers");
-			frames[p_frame].download_texture_staging_buffers.clear();
-			frames[p_frame].download_buffer_texture_copy_regions.clear();
-			frames[p_frame].download_texture_mipmap_offsets.clear();
-			frames[p_frame].download_texture_get_data_requests.clear();
+			request.callback.call(packed_byte_array);
 		}
+
+		GodotProfileZoneGrouped(_profile_zone, "clear buffers");
+		p_batch.download_texture_staging_buffers.clear();
+		p_batch.download_buffer_texture_copy_regions.clear();
+		p_batch.download_texture_mipmap_offsets.clear();
+		p_batch.download_texture_get_data_requests.clear();
 	}
 }
 

@@ -216,6 +216,9 @@ public:
 	// hundred instances are written per frame). UINT32_MAX = flush the full range.
 	virtual void buffer_flush(BufferID p_buffer, uint32_t p_used_size = UINT32_MAX) {}
 	virtual void buffer_initiate_async_map(BufferID p_buffer) {} // WebGPU: start async map so it completes by next frame.
+	// False while an async map started by buffer_initiate_async_map() has not
+	// delivered its data yet. Drivers whose fence_wait() blocks never need it.
+	virtual bool buffer_map_ready(BufferID p_buffer) { return true; }
 	// Direct queue write to a buffer, bypassing staging buffers entirely.
 	// Used for skeleton/bone updates that are fully written before any draws.
 	virtual void buffer_write_direct(BufferID p_buffer, uint64_t p_offset, uint64_t p_size, const void *p_data) {}

@@ -158,6 +158,9 @@ private:
 		STAGING_REQUIRED_ACTION_STALL_PREVIOUS,
 	};
 
+	// frame_used of a download block whose data a deferred download still needs.
+	static constexpr uint64_t STAGING_BLOCK_HELD = UINT64_MAX;
+
 	struct StagingBufferBlock {
 		RDD::BufferID driver_id;
 		uint64_t frame_used = 0;
@@ -1785,7 +1788,26 @@ private:
 	// nature of the GPU. They will get deleted
 	// when the frame is cycled.
 
-	struct Frame {
+	// Pending asynchronous data transfers of one frame.
+	struct DownloadBatch {
+		// Pending asynchronous data transfer for buffers.
+		LocalVector<RDD::BufferID> download_buffer_staging_buffers;
+		LocalVector<RDD::BufferCopyRegion> download_buffer_copy_regions;
+		LocalVector<BufferGetDataRequest> download_buffer_get_data_requests;
+
+		// Pending asynchronous data transfer for textures.
+		LocalVector<RDD::BufferID> download_texture_staging_buffers;
+		LocalVector<RDD::BufferTextureCopyRegion> download_buffer_texture_copy_regions;
+		LocalVector<uint32_t> download_texture_mipmap_offsets;
+		LocalVector<TextureGetDataRequest> download_texture_get_data_requests;
+	};
+
+	// Batches whose staging buffers the driver has not mapped yet even though
+	// the frame's fence was waited on (WebGPU maps asynchronously and cannot
+	// block). Kept in order and flushed once the data arrives.
+	LocalVector<DownloadBatch> deferred_downloads;
+
+	struct Frame : DownloadBatch {
 		// List in usage order, from last to free to first to free.
 		List<Buffer> buffers_to_dispose_of;
 		List<Texture> textures_to_dispose_of;
@@ -1797,17 +1819,6 @@ private:
 		List<ComputePipeline> compute_pipelines_to_dispose_of;
 		List<AccelerationStructure> acceleration_structures_to_dispose_of;
 		List<RaytracingPipeline> raytracing_pipelines_to_dispose_of;
-
-		// Pending asynchronous data transfer for buffers.
-		LocalVector<RDD::BufferID> download_buffer_staging_buffers;
-		LocalVector<RDD::BufferCopyRegion> download_buffer_copy_regions;
-		LocalVector<BufferGetDataRequest> download_buffer_get_data_requests;
-
-		// Pending asynchronous data transfer for textures.
-		LocalVector<RDD::BufferID> download_texture_staging_buffers;
-		LocalVector<RDD::BufferTextureCopyRegion> download_buffer_texture_copy_regions;
-		LocalVector<uint32_t> download_texture_mipmap_offsets;
-		LocalVector<TextureGetDataRequest> download_texture_get_data_requests;
 
 		// The command pool used by the command buffer.
 		RDD::CommandPoolID command_pool;
@@ -1886,6 +1897,9 @@ public:
 	void _end_frame();
 	void _execute_frame(bool p_present);
 	void _stall_for_frame(uint32_t p_frame);
+	bool _download_batch_ready(const DownloadBatch &p_batch);
+	void _download_batch_hold_blocks(const DownloadBatch &p_batch, bool p_hold);
+	void _download_batch_flush(DownloadBatch &p_batch);
 	void _stall_for_previous_frames();
 	void _flush_and_stall_for_all_frames(bool p_begin_frame = true);
 
