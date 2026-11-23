@@ -6349,9 +6349,84 @@ void RenderingDeviceDriverWebGPU::command_copy_texture(CommandBufferID p_cmd_buf
 }
 
 void RenderingDeviceDriverWebGPU::command_resolve_texture(CommandBufferID p_cmd_buffer, TextureID p_src_texture, TextureLayout p_src_texture_layout, uint32_t p_src_layer, uint32_t p_src_mipmap, TextureID p_dst_texture, TextureLayout p_dst_texture_layout, uint32_t p_dst_layer, uint32_t p_dst_mipmap) {
-	// TODO: Create a minimal render pass with MSAA texture as color attachment
-	// and the resolve target as resolveTarget. Begin and immediately end the pass.
-	WARN_PRINT_ONCE("WebGPU: command_resolve_texture not yet implemented.");
+	// WebGPU has no resolve command: resolving happens when a render pass ends
+	// with a resolveTarget. An empty pass that loads the multisampled texture
+	// and resolves it does the same as vkCmdResolveImage.
+	WGCommandBuffer *cmd = (WGCommandBuffer *)(p_cmd_buffer.id);
+	WGTexture *src = (WGTexture *)(p_src_texture.id);
+	WGTexture *dst = (WGTexture *)(p_dst_texture.id);
+	ERR_FAIL_NULL(cmd);
+	ERR_FAIL_NULL(src);
+	ERR_FAIL_NULL(dst);
+	ERR_FAIL_COND_MSG(_is_depth_format(src->format), "WebGPU cannot resolve depth/stencil textures.");
+	ERR_FAIL_COND_MSG(src->format != dst->format, "WebGPU resolve needs the source and destination to share one format.");
+
+	cmd->end_active_encoder();
+
+	WGPUTextureViewDescriptor view_desc = {};
+	view_desc.format = src->format;
+	view_desc.dimension = WGPUTextureViewDimension_2D;
+	view_desc.mipLevelCount = 1;
+	view_desc.arrayLayerCount = 1;
+	view_desc.aspect = WGPUTextureAspect_All;
+
+	view_desc.baseMipLevel = p_src_mipmap;
+	view_desc.baseArrayLayer = p_src_layer;
+	WGPUTextureView src_view = wgpuTextureCreateView(src->gpu_handle(), &view_desc);
+
+	// A resolve target must be a render attachment. RenderingDevice only asks
+	// the destination for TEXTURE_USAGE_CAN_COPY_TO_BIT, so resolve into a
+	// temporary texture and copy when the destination cannot be one.
+	const bool direct = (dst->usage & WGPUTextureUsage_RenderAttachment) != 0;
+	WGPUTexture temp = nullptr;
+	WGPUTextureView dst_view = nullptr;
+	if (direct) {
+		view_desc.baseMipLevel = p_dst_mipmap;
+		view_desc.baseArrayLayer = p_dst_layer;
+		dst_view = wgpuTextureCreateView(dst->gpu_handle(), &view_desc);
+	} else {
+		WGPUTextureDescriptor temp_desc = {};
+		temp_desc.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+		temp_desc.dimension = WGPUTextureDimension_2D;
+		temp_desc.size = { src->width, src->height, 1 };
+		temp_desc.format = src->format;
+		temp_desc.mipLevelCount = 1;
+		temp_desc.sampleCount = 1;
+		temp = wgpuDeviceCreateTexture(device, &temp_desc);
+		dst_view = wgpuTextureCreateView(temp, nullptr);
+	}
+
+	WGPURenderPassColorAttachment color_att = {};
+	color_att.view = src_view;
+	color_att.resolveTarget = dst_view;
+	color_att.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+	color_att.loadOp = WGPULoadOp_Load;
+	color_att.storeOp = WGPUStoreOp_Store;
+
+	WGPURenderPassDescriptor rp_desc = {};
+	rp_desc.colorAttachmentCount = 1;
+	rp_desc.colorAttachments = &color_att;
+
+	WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(cmd->encoder, &rp_desc);
+	wgpuRenderPassEncoderEnd(pass);
+	wgpuRenderPassEncoderRelease(pass);
+	wgpuTextureViewRelease(src_view);
+	wgpuTextureViewRelease(dst_view);
+
+	if (!direct) {
+		WGPUTexelCopyTextureInfo temp_copy = {};
+		temp_copy.texture = temp;
+		temp_copy.aspect = WGPUTextureAspect_All;
+		WGPUTexelCopyTextureInfo dst_copy = {};
+		dst_copy.texture = dst->gpu_handle();
+		dst_copy.mipLevel = p_dst_mipmap;
+		dst_copy.origin = { 0, 0, _texture_copy_origin_z(dst, p_dst_layer, 0) };
+		dst_copy.aspect = WGPUTextureAspect_All;
+		const WGPUExtent3D extent = { MIN(src->width, MAX(1u, dst->width >> p_dst_mipmap)), MIN(src->height, MAX(1u, dst->height >> p_dst_mipmap)), 1 };
+		wgpuCommandEncoderCopyTextureToTexture(cmd->encoder, &temp_copy, &dst_copy, &extent);
+		// The encoder keeps the texture alive until the commands finish.
+		wgpuTextureRelease(temp);
+	}
 }
 
 // Return the byte size of a single texel for a given WGPUTextureFormat.
