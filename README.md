@@ -32,12 +32,13 @@ No unrelated engine changes are included.
    cannot do natively is emulated in the driver (for example
    `command_resolve_texture` through a render pass, async readback through
    `buffer_map_ready()`), rather than avoided by the renderer.
-5. **Changes come from real use.** Fixes are made when a project or demo
-   hits a problem, not to work through issue lists speculatively.
-6. **Verify on real projects.** Each change is exported with a stable Godot
-   editor and the built template, and run in Chrome with no GPU validation
-   errors (godot-demo-projects: `2d/platformer`, `2d/particles`,
-   `3d/platformer`, `compute/texture`).
+5. **Priorities.** First what breaks in existing projects and demos, then
+   shared-code changes that affect other platforms.
+6. **Verify on every demo.** Each change is checked against all of
+   [godot-demo-projects](https://github.com/godotengine/godot-demo-projects):
+   every demo is exported with a stable Godot editor and the built template,
+   run in headless Chrome, and its GPU validation errors and screenshot are
+   compared with the previous build (`webgpu_tests/demo_sweep/`).
 
 ## Credits
 
