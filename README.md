@@ -13,6 +13,32 @@ May 2026. The goal here is narrow: keep that driver working on current
 stable Godot releases, with as small a diff from upstream as possible.
 No unrelated engine changes are included.
 
+## Implementation rules
+
+1. **WebGPU differences live in the driver.** Workarounds go into
+   `drivers/webgpu/`: the `RenderingDeviceDriver` implementation, the SPIR-V
+   preprocess (`spirv_preprocess.cpp`) or the WGSL translation. Shared code
+   (`servers/`, `scene/`, `core/`, the `renderer_rd` shaders) stays as in
+   upstream.
+2. **Shared changes must not change other drivers.** When the shared code has
+   to change, the change works the same on Vulkan, D3D12 and Metal, or is a
+   new `RenderingDeviceDriver` virtual whose default keeps the old behavior
+   (for example `buffer_map_ready()`). No `#ifdef WEBGPU_ENABLED` in shared
+   code, since an editor built with `webgpu=yes` also runs other drivers.
+3. **Follow the Godot workflow.** Exporting, the shader baker and
+   `RDShaderFile` work as in upstream. No extra steps for users and no
+   WebGPU-only project settings unless upstream has a matching concept.
+4. **Implement the RD contract, not a subset.** An RD feature the driver
+   cannot do natively is emulated in the driver (for example
+   `command_resolve_texture` through a render pass, async readback through
+   `buffer_map_ready()`), rather than avoided by the renderer.
+5. **Changes come from real use.** Fixes are made when a project or demo
+   hits a problem, not to work through issue lists speculatively.
+6. **Verify on real projects.** Each change is exported with a stable Godot
+   editor and the built template, and run in Chrome with no GPU validation
+   errors (godot-demo-projects: `2d/platformer`, `2d/particles`,
+   `3d/platformer`, `compute/texture`).
+
 ## Credits
 
 - **[David Walter](https://github.com/dwalter)** created the WebGPU
