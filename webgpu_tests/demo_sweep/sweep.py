@@ -563,8 +563,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-seconds",
         type=float,
-        default=60,
-        help="Longest wait for a demo that has not drawn a frame yet (default: 60).",
+        default=120,
+        help="Longest wait for a demo that has not drawn a frame yet (default: 120).",
     )
     parser.add_argument("--jobs", type=int, default=1, help="Parallel export jobs (default: 1).")
     parser.add_argument("--compare", default=None, help="Previous results.json for regression comparison.")

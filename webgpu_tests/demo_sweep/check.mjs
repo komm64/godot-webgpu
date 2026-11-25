@@ -58,12 +58,12 @@ const INIT_SCRIPT = `(() => {
 })();`;
 
 function parseArgs(argv) {
-  const args = { seconds: 15, maxSeconds: 60 };
+  const args = { seconds: 15, maxSeconds: 120 };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === '--help' || flag === '-h') {
       console.log(
-        'Usage: node check.mjs --cdp-port <port> --url <url> --shot <png> [--seconds 15] [--max-seconds 60]'
+        'Usage: node check.mjs --cdp-port <port> --url <url> --shot <png> [--seconds 15] [--max-seconds 120]'
       );
       process.exit(0);
     }

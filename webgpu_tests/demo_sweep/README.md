@@ -14,7 +14,7 @@ python webgpu_tests/demo_sweep/sweep.py \
   [--chrome <chrome-exe>] \
   [--port 8860] \
   [--cdp-port 9360] \
-  [--seconds 15]   [--max-seconds 60] \
+  [--seconds 15] \n  [--max-seconds 120] \
   [--jobs 1] \
   [--compare <old-results.json>]
 ```
@@ -23,7 +23,7 @@ Key options:
 - `--filter <substring>`: Run only demos whose relative path contains `<substring>`.
 - `--jobs <N>`: Export up to `N` demos in parallel (default `1`).
 - `--seconds <N>`: Run time per demo after its first frame, before capturing metrics and screenshot (default `15`).
-- `--max-seconds <N>`: Longest wait for a demo that is still loading or compiling shaders and has not drawn a frame (default `60`).
+- `--max-seconds <N>`: Longest wait for a demo that is still loading or compiling shaders and has not drawn a frame (default `120`). Pipeline creation is synchronous, so a demo with many materials can take about a minute to draw on a low-end GPU.
 - `--chrome <path>`: Chrome executable (Windows default: `C:/Program Files/Google/Chrome/Application/chrome.exe`).
 
 ## Outputs
