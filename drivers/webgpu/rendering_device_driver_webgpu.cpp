@@ -8775,10 +8775,12 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 
 	// --- Multisample state ---
 	WGPUMultisampleState multisample = {};
-	// TextureSamples enum: 0=1x, 1=2x, 2=4x, 3=8x ... → 1 << sample_count
 	multisample.count = _supported_sample_count(p_multisample_state.sample_count);
 	multisample.mask = 0xFFFFFFFFu;
-	multisample.alphaToCoverageEnabled = p_multisample_state.enable_alpha_to_coverage;
+	// WebGPU rejects alpha to coverage without MSAA, where Vulkan accepts it and
+	// derives the single sample's coverage from alpha. Without it the pixel is
+	// kept; the material's alpha scissor still discards below its threshold.
+	multisample.alphaToCoverageEnabled = p_multisample_state.enable_alpha_to_coverage && multisample.count > 1;
 
 	// --- Depth/stencil helpers ---
 	auto map_compare = [](CompareOperator op) -> WGPUCompareFunction {
