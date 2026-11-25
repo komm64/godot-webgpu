@@ -333,6 +333,10 @@ const Engine = (function () {
 				'texture-compression-bc',
 				'texture-compression-etc2',
 				'texture-compression-astc',
+				// 3D textures in these formats (Texture3D imports) need the
+				// sliced-3d features on top of the base ones.
+				'texture-compression-bc-sliced-3d',
+				'texture-compression-astc-sliced-3d',
 			];
 			for (var i = 0; i < optionalFeatures.length; i++) {
 				if (adapter.features.has(optionalFeatures[i])) {

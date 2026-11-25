@@ -395,6 +395,12 @@ static char *_spv_to_wgsl_cached(const uint8_t *p_spv_ptr, int p_spv_size) {
 // =============================================================================
 
 // Returns true if the WebGPU texture format is a depth or depth/stencil format.
+// WebGPU only has 1x and 4x multisampling. Like the Vulkan driver, fall back to
+// the closest supported count below the requested one.
+static uint32_t _supported_sample_count(RDD::TextureSamples p_samples) {
+	return p_samples >= RDD::TEXTURE_SAMPLES_4 ? 4u : 1u;
+}
+
 static bool _is_depth_format(WGPUTextureFormat p_format) {
 	switch (p_format) {
 		case WGPUTextureFormat_Depth16Unorm:
@@ -671,9 +677,8 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 	}
 
 	// Create fallback multisampled texture (4x4, 4x MSAA, RenderAttachment usage
-	// required for MSAA textures). Used by ResolveRasterShaderRD and similar MSAA
-	// depth resolve shaders when the source is a depth format (can't be sampled
-	// as UnfilterableFloat in WebGPU). The shader reads zeros but no GPU errors.
+	// required for MSAA textures). Bound when a multisampled slot gets a texture
+	// that isn't multisampled. The shader reads zeros but no GPU errors.
 	{
 		WGPUTextureDescriptor td = {};
 		// MSAA textures require RenderAttachment usage; we never render to this
@@ -1772,7 +1777,7 @@ RDD::TextureID RenderingDeviceDriverWebGPU::texture_create(const TextureFormat &
 	tex->depth = p_format.depth;
 	tex->mipmaps = p_format.mipmaps;
 	tex->layers = p_format.array_layers;
-	tex->sample_count = 1 << p_format.samples;
+	tex->sample_count = _supported_sample_count(p_format.samples);
 	tex->usage = _texture_usage_to_wgpu(p_format.usage_bits);
 
 	// WebGPU does not support R8/RG8/R16/RG16 as storage texel formats.
@@ -5453,16 +5458,27 @@ RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<Bou
 					if (tex && tex->default_view) {
 						WGPUBindGroupEntry te = {};
 						te.binding = uniform.binding * 2 + j * 2 + 1;
-						// Check sample-count mismatch first: if the BGL expects a multisampled
-						// texture but the bound texture isn't multisampled (or vice versa),
-						// we can't use either the real texture or a non-MS fallback. Substitute
-						// the MSAA fallback for this case. This handles ResolveRasterShaderRD
-						// which binds an MSAA depth texture into a float MSAA slot (WebGPU
-						// forbids sampling depth as float, so the MSAA fallback is used).
+						// A multisampled slot needs a multisampled texture; substitute the
+						// MSAA fallback when the bound one isn't.
 						bool tex_is_ms = (tex->sample_count > 1);
-						if (swt_expected_ms && (!tex_is_ms || _is_depth_format(tex->format)) &&
-								fallback_ms_texture_view != nullptr) {
+						if (swt_expected_ms && !tex_is_ms && fallback_ms_texture_view != nullptr) {
 							te.textureView = fallback_ms_texture_view;
+						} else if (swt_expected_ms && _is_depth_format(tex->format)) {
+							// sampler2DMS on an MSAA depth buffer (ResolveRasterShaderRD).
+							// WebGPU lets the depth aspect bind as unfilterable-float, but
+							// only through a single-aspect view.
+							WGPUTextureViewDescriptor vd = {};
+							vd.dimension = WGPUTextureViewDimension_2D;
+							vd.baseMipLevel = tex->base_mipmap;
+							vd.mipLevelCount = 1;
+							vd.baseArrayLayer = tex->base_layer;
+							vd.arrayLayerCount = 1;
+							vd.aspect = WGPUTextureAspect_DepthOnly;
+							WGPUTextureView depth_view = wgpuTextureCreateView(tex->view_source, &vd);
+							if (depth_view) {
+								us->temp_views.push_back(depth_view);
+							}
+							te.textureView = depth_view ? depth_view : tex->default_view;
 						} else if (_is_depth_format(tex->format) && fallback_float_texture_view != nullptr) {
 							// Fix depth/float mismatch: combined sampler+texture bindings
 							// are always Float. If a depth fallback texture is provided,
@@ -8760,7 +8776,7 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 	// --- Multisample state ---
 	WGPUMultisampleState multisample = {};
 	// TextureSamples enum: 0=1x, 1=2x, 2=4x, 3=8x ... → 1 << sample_count
-	multisample.count = (uint32_t)(1u << (uint32_t)p_multisample_state.sample_count);
+	multisample.count = _supported_sample_count(p_multisample_state.sample_count);
 	multisample.mask = 0xFFFFFFFFu;
 	multisample.alphaToCoverageEnabled = p_multisample_state.enable_alpha_to_coverage;
 
@@ -8807,7 +8823,12 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 				? map_compare(p_depth_stencil_state.depth_compare_operator)
 				: WGPUCompareFunction_Always;
 
-		if (p_depth_stencil_state.enable_stencil) {
+		// Vulkan ignores stencil state when the attachment has no stencil aspect,
+		// while WebGPU rejects the pipeline, so leave it disabled there.
+		const bool has_stencil = ds.format == WGPUTextureFormat_Depth24PlusStencil8 ||
+				ds.format == WGPUTextureFormat_Depth32FloatStencil8 ||
+				ds.format == WGPUTextureFormat_Stencil8;
+		if (p_depth_stencil_state.enable_stencil && has_stencil) {
 			ds.stencilFront.compare = map_compare(p_depth_stencil_state.front_op.compare);
 			ds.stencilFront.failOp = map_stencil_op(p_depth_stencil_state.front_op.fail);
 			ds.stencilFront.depthFailOp = map_stencil_op(p_depth_stencil_state.front_op.depth_fail);

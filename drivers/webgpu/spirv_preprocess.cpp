@@ -1320,9 +1320,10 @@ Vector<uint8_t> split_combined_samplers(const Vector<uint8_t> &p_bytes) {
 					push_word(out, w0); // Same wc|op.
 					push_word(out, target);
 					push_word(out, DECO_BINDING);
-					// Multisampled: no sampler, so image gets binding*2 (like non-combined).
-					// Regular: image gets binding*2+1, sampler gets binding*2.
-					push_word(out, cinfo.is_multisampled ? cinfo.binding * 2 : cinfo.binding * 2 + 1);
+					// The image always gets binding*2+1, matching the combined BGL entry.
+					// Regular: the sampler gets binding*2. Multisampled: there is no
+					// sampler variable, and the BGL's sampler slot goes unused.
+					push_word(out, cinfo.binding * 2 + 1);
 					pos += wc;
 					continue;
 				} else if (decoration == DECO_NON_WRITABLE) {
