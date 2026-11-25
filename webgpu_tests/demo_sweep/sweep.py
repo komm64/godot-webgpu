@@ -21,6 +21,11 @@ DEFAULT_CHROME_WIN = "C:/Program Files/Google/Chrome/Application/chrome.exe"
 SKIP_DIRS = {".godot", "addons", ".git"}
 GODOT_TIMEOUT_SEC = 300
 
+# Demos that cannot run as a web export on any renderer: C# projects (no web
+# export in Godot 4) and OpenXR (native runtimes only). They are listed as
+# skipped rather than failed.
+UNSUPPORTED_PREFIXES = ("mono/", "xr/openxr_")
+
 EXTRA_MIME_TYPES = {
     ".wasm": "application/wasm",
     ".js": "application/javascript",
@@ -70,6 +75,13 @@ def discover_demos(demos_dir: Path, filter_substr: str | None) -> list[tuple[str
         found.append((name, rel, dir_path))
     found.sort(key=lambda item: item[1])
     return found
+
+
+def unsupported_reason(rel: str) -> str | None:
+    for prefix in UNSUPPORTED_PREFIXES:
+        if rel.startswith(prefix):
+            return f"unsupported on web ({prefix.rstrip('/_')})"
+    return None
 
 
 def patch_project_godot(project_file: Path) -> None:
@@ -332,6 +344,7 @@ def run_check(
     cdp_port: int,
     url: str,
     seconds: float,
+    max_seconds: float,
     shot_path: Path,
     out_dir: Path,
 ) -> dict:
@@ -344,10 +357,12 @@ def run_check(
         url,
         "--seconds",
         str(seconds),
+        "--max-seconds",
+        str(max_seconds),
         "--shot",
         str(shot_path),
     ]
-    timeout_sec = max(30, int(seconds) + 60)
+    timeout_sec = int(max(seconds, max_seconds)) + 90
     try:
         proc = subprocess.run(
             cmd,
@@ -401,6 +416,8 @@ def run_check(
         "frames": int(data.get("frames") or 0),
         "gpu_errors": int(data.get("gpu_errors") or 0),
         "js_errors": int(data.get("js_errors") or 0),
+        "env_errors": int(data.get("env_errors") or 0),
+        "warnings": int(data.get("warnings") or 0),
         "first_errors": list(data.get("first_errors") or [])[:5],
         "shot": shot_rel,
     }
@@ -418,6 +435,9 @@ def compare_results(
     for cur in results:
         name = cur["name"]
         old = old_map.get(name)
+        if cur.get("skipped"):
+            diffs[name] = {"status": "skipped", "reasons": []}
+            continue
         if old is None:
             diffs[name] = {"status": "new", "reasons": []}
             continue
@@ -442,6 +462,8 @@ def compare_results(
 
 
 def is_failure(item: dict) -> bool:
+    if item.get("skipped"):
+        return False
     return (
         not item.get("export_ok")
         or int(item.get("gpu_errors") or 0) > 0
@@ -468,14 +490,15 @@ def write_summary_md(out_dir: Path, results: list[dict], diffs: dict[str, dict] 
 
     ordered = sorted(results, key=sort_key)
     total = len(results)
+    skipped = sum(1 for r in results if r.get("skipped"))
     failed = sum(1 for r in results if is_failure(r))
-    passed = total - failed
-    export_failed = sum(1 for r in results if not r.get("export_ok"))
+    passed = total - failed - skipped
+    export_failed = sum(1 for r in results if not r.get("export_ok") and not r.get("skipped"))
 
     lines = [
         "# WebGPU Demo Sweep Summary",
         "",
-        f"- Total: **{total}** | Passed: **{passed}** | Failed: **{failed}** | Export failed: **{export_failed}**",
+        f"- Total: **{total}** | Passed: **{passed}** | Failed: **{failed}** | Export failed: **{export_failed}** | Skipped: **{skipped}**",
     ]
     if diffs is not None:
         regressed_count = sum(1 for d in diffs.values() if d["status"] == "regressed")
@@ -494,10 +517,15 @@ def write_summary_md(out_dir: Path, results: list[dict], diffs: dict[str, dict] 
         lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
 
     for item in ordered:
-        exp = "ok" if item.get("export_ok") else f"fail ({item.get('export_rc', '?')})"
+        if item.get("skipped"):
+            exp = "skipped"
+        else:
+            exp = "ok" if item.get("export_ok") else f"fail ({item.get('export_rc', '?')})"
         ff = "-" if item.get("first_frame_ms") is None else str(item["first_frame_ms"])
         shot = f"[png]({item['shot']})" if item.get("shot") else "-"
         errs = "; ".join(md_escape(e) for e in (item.get("first_errors") or [])[:5]) or "-"
+        if item.get("skipped"):
+            errs = item["skipped"]
         if diffs is not None:
             diff = diffs.get(item["name"], {"status": "new", "reasons": []})
             status = diff["status"].upper()
@@ -529,7 +557,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--port", type=int, default=8860, help="Local HTTP server port (default: 8860).")
     parser.add_argument("--cdp-port", type=int, default=9360, help="Chrome DevTools port (default: 9360).")
-    parser.add_argument("--seconds", type=float, default=15, help="Seconds to run each demo (default: 15).")
+    parser.add_argument(
+        "--seconds", type=float, default=15, help="Seconds to run each demo after its first frame (default: 15)."
+    )
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=60,
+        help="Longest wait for a demo that has not drawn a frame yet (default: 60).",
+    )
     parser.add_argument("--jobs", type=int, default=1, help="Parallel export jobs (default: 1).")
     parser.add_argument("--compare", default=None, help="Previous results.json for regression comparison.")
     return parser
@@ -567,18 +603,20 @@ def main(argv: list[str] | None = None) -> int:
 
     demos = discover_demos(demos_dir, args.filter)
     print(f"Discovered {len(demos)} demo(s) under {demos_dir}")
+    skipped = {name: unsupported_reason(rel) for name, rel, _ in demos if unsupported_reason(rel)}
+    demos_to_export = [d for d in demos if d[0] not in skipped]
 
     export_results: dict[str, dict] = {}
     jobs = max(1, args.jobs)
     if jobs == 1:
-        for name, rel, src_dir in demos:
+        for name, rel, src_dir in demos_to_export:
             print(f"[export] {rel} -> {name}", flush=True)
             export_results[name] = export_demo(name, src_dir, godot_abs, template_abs, out_dir)
     else:
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             futs = {
                 pool.submit(export_demo, name, src_dir, godot_abs, template_abs, out_dir): (name, rel)
-                for name, rel, src_dir in demos
+                for name, rel, src_dir in demos_to_export
             }
             for fut in as_completed(futs):
                 name, rel = futs[fut]
@@ -587,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
                 status = "ok" if res["export_ok"] else f"fail (rc={res['export_rc']})"
                 print(f"[export] {rel}: {status}", flush=True)
 
-    exported_names = [name for name, _, _ in demos if export_results[name]["export_ok"]]
+    exported_names = [name for name, _, _ in demos_to_export if export_results[name]["export_ok"]]
     server: http.server.ThreadingHTTPServer | None = None
     chrome_proc: subprocess.Popen | None = None
     results: list[dict] = []
@@ -598,6 +636,11 @@ def main(argv: list[str] | None = None) -> int:
             chrome_proc = launch_chrome(args.chrome, args.cdp_port, profile_dir)
 
         for name, _, _ in demos:
+            if name in skipped:
+                results.append({"name": name, "skipped": skipped[name], "export_ok": False, "export_rc": None,
+                                "first_frame_ms": None, "frames": 0, "gpu_errors": 0, "js_errors": 0,
+                                "first_errors": [], "shot": None})
+                continue
             exp = export_results[name]
             if not exp["export_ok"]:
                 results.append(exp)
@@ -605,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
             url = f"http://127.0.0.1:{args.port}/{name}/index.html"
             shot_path = shots_dir / f"{name}.png"
             print(f"[run] {name} ({args.seconds}s)", flush=True)
-            check = run_check(check_mjs, args.cdp_port, url, args.seconds, shot_path, out_dir)
+            check = run_check(check_mjs, args.cdp_port, url, args.seconds, args.max_seconds, shot_path, out_dir)
             results.append(
                 {
                     "name": name,
@@ -615,6 +658,8 @@ def main(argv: list[str] | None = None) -> int:
                     "frames": check["frames"],
                     "gpu_errors": check["gpu_errors"],
                     "js_errors": check["js_errors"],
+                    "env_errors": check.get("env_errors", 0),
+                    "warnings": check.get("warnings", 0),
                     "first_errors": check["first_errors"],
                     "shot": check["shot"],
                 }
