@@ -14,7 +14,8 @@ python webgpu_tests/demo_sweep/sweep.py \
   [--chrome <chrome-exe>] \
   [--port 8860] \
   [--cdp-port 9360] \
-  [--seconds 15] \n  [--max-seconds 120] \
+  [--seconds 15] \
+  [--max-seconds 120] \
   [--jobs 1] \
   [--compare <old-results.json>]
 ```
