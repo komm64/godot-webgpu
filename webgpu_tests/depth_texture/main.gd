@@ -31,15 +31,17 @@ func _ready() -> void:
 	(floor_mesh.mesh as PlaneMesh).size = Vector2(40, 40)
 	add_child(floor_mesh)
 
-	# Boxes from near to far, so both the depth bands and the blur vary.
+	# Two rows of boxes from near to far, one per half of the screen, so the
+	# depth bands (left) and the blur (right) both cover near and far.
 	for i in 8:
-		var box := MeshInstance3D.new()
-		box.mesh = BoxMesh.new()
-		var material := StandardMaterial3D.new()
-		material.albedo_color = Color.from_hsv(i / 8.0, 0.7, 0.9)
-		box.material_override = material
-		box.position = Vector3(-3.0 + i * 0.9, 0.5, 1.0 - i * 3.0)
-		add_child(box)
+		for side in [-1.0, 1.0]:
+			var box := MeshInstance3D.new()
+			box.mesh = BoxMesh.new()
+			var material := StandardMaterial3D.new()
+			material.albedo_color = Color.from_hsv(i / 8.0, 0.7, 0.9)
+			box.material_override = material
+			box.position = Vector3(side * 1.6, 0.5, 1.0 - i * 3.0)
+			add_child(box)
 
 	# Left half of the screen: x from -1 to 0 in clip space.
 	var quad := MeshInstance3D.new()
