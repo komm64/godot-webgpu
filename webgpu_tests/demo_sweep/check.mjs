@@ -99,6 +99,9 @@ function parseArgs(argv) {
 const WARNING_RE = /^(WARNING:|USER WARNING:|SHADER WARNING:)/;
 const ENV_RE =
   /(status of 404|WrongDocumentError|NotAllowedError|Error getting user media|pointer lock)/;
+// CDP calls that time out while the page's main thread is busy (a long shader
+// compile). A demo that never draws still fails on frames == 0.
+const STALL_RE = /^(Failed to read window\.__sweep|Screenshot failed): CDP .* timed out/;
 // The driver logs each uncaptured GPU error too; those are counted as GPU errors.
 const GPU_LOG_RE = /uncaptured error/i;
 
@@ -113,7 +116,7 @@ function classify(messages) {
       kind = 'gpu';
     } else if (WARNING_RE.test(text)) {
       kind = 'warnings';
-    } else if (ENV_RE.test(text)) {
+    } else if (ENV_RE.test(text) || STALL_RE.test(text)) {
       kind = 'env';
     } else {
       kind = 'errors';

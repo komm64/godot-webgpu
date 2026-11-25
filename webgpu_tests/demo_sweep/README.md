@@ -39,7 +39,8 @@ Written under `--out`:
 
 - `gpu_errors`: WebGPU uncaptured errors (validation, out of memory).
 - `js_errors`: console errors and exceptions, such as Godot `ERROR:` lines.
-- `env_errors`: errors from the headless page, not the engine: 404s, and
+- `env_errors`: errors from the headless page, not the engine: 404s, CDP
+  timeouts while the page is busy, and
   pointer lock, media or MIDI permission errors. Not counted as failures.
 - `warnings`: Godot `WARNING:` lines. Not counted as failures.
 
