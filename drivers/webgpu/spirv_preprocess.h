@@ -92,6 +92,12 @@ Vector<uint8_t> negate_position_y(const Vector<uint8_t> &p_bytes);
 // InputAttachmentIndex (43) — Vulkan subpass inputs, no WebGPU equivalent.
 Vector<uint8_t> strip_restrict_decoration(const Vector<uint8_t> &p_bytes);
 
+// Turn the BuiltIn PointCoord input into a Private variable. WGSL has no point
+// coordinate and Tint rejects the builtin. The renderers emulate point size
+// with quads when SUPPORTS_POINT_SIZE is false, so gl_PointCoord only remains
+// in branches that never run.
+Vector<uint8_t> privatize_point_coord(const Vector<uint8_t> &p_bytes);
+
 // Replace OpMemoryBarrier with OpNop. Tint does not support
 // OpMemoryBarrier (SPIR-V 225); WGSL has no direct equivalent.
 // workgroupBarrier() (from OpControlBarrier) covers synchronization.

@@ -1953,6 +1953,133 @@ Vector<uint8_t> strip_restrict_decoration(const Vector<uint8_t> &p_bytes) {
 	return out;
 }
 
+// ---- privatize_point_coord ----
+
+Vector<uint8_t> privatize_point_coord(const Vector<uint8_t> &p_bytes) {
+	const int64_t len = p_bytes.size();
+	const uint32_t total_words = (uint32_t)(len / 4);
+	if (total_words < 5) {
+		return p_bytes;
+	}
+	const uint8_t *data = p_bytes.ptr();
+	static constexpr uint32_t BUILTIN_POINT_COORD = 16;
+	static constexpr uint32_t SC_PRIVATE = 6;
+
+	// Find the PointCoord variable, its pointee type, and make sure it is only
+	// loaded (an access chain would yield Input-typed pointers).
+	uint32_t var_id = 0;
+	uint32_t pos = 5;
+	while (pos < total_words) {
+		uint32_t w0 = read_word(data, len, pos);
+		uint32_t wc = (w0 >> 16);
+		uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			return p_bytes;
+		}
+		if (op == OP_DECORATE && wc >= 4 && read_word(data, len, pos + 2) == DECO_BUILTIN &&
+				read_word(data, len, pos + 3) == BUILTIN_POINT_COORD) {
+			var_id = read_word(data, len, pos + 1);
+			break;
+		}
+		pos += wc;
+	}
+	if (var_id == 0) {
+		return p_bytes;
+	}
+
+	HashMap<uint32_t, uint32_t> pointee_of; // OpTypePointer id -> pointee type.
+	uint32_t var_ptr_type = 0;
+	pos = 5;
+	while (pos < total_words) {
+		uint32_t w0 = read_word(data, len, pos);
+		uint32_t wc = (w0 >> 16);
+		uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			return p_bytes;
+		}
+		if (op == OP_TYPE_POINTER && wc == 4) {
+			pointee_of.insert(read_word(data, len, pos + 1), read_word(data, len, pos + 3));
+		} else if (op == OP_VARIABLE && wc >= 4 && read_word(data, len, pos + 2) == var_id) {
+			var_ptr_type = read_word(data, len, pos + 1);
+		} else if ((op == OP_ACCESS_CHAIN || op == OP_IN_BOUNDS_ACCESS_CHAIN) && wc >= 4 &&
+				read_word(data, len, pos + 3) == var_id) {
+			return p_bytes;
+		}
+		pos += wc;
+	}
+	if (var_ptr_type == 0 || !pointee_of.has(var_ptr_type)) {
+		return p_bytes;
+	}
+	const uint32_t pointee = pointee_of[var_ptr_type];
+
+	// SPIR-V 1.4+ lists every global in the entry point interface; earlier
+	// versions only Input/Output ones.
+	const bool keep_in_interface = read_word(data, len, 1) >= 0x00010400;
+	const uint32_t private_ptr_type = read_word(data, len, 3); // New id at the old bound.
+
+	Vector<uint8_t> out;
+	append_bytes(out, data, 0, 20);
+	{
+		uint32_t *hdr = (uint32_t *)out.ptrw();
+		hdr[3] = private_ptr_type + 1;
+	}
+
+	pos = 5;
+	while (pos < total_words) {
+		uint32_t w0 = read_word(data, len, pos);
+		uint32_t wc = (w0 >> 16);
+		uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			return p_bytes;
+		}
+
+		if (op == OP_DECORATE && wc >= 3 && read_word(data, len, pos + 1) == var_id) {
+			pos += wc; // BuiltIn (and any other decoration) of the old input.
+			continue;
+		}
+		if (op == OP_ENTRY_POINT && !keep_in_interface) {
+			uint32_t name_end = pos + 3;
+			while (name_end < pos + wc) {
+				uint32_t w = read_word(data, len, name_end);
+				name_end++;
+				if ((w & 0xFF) == 0 || ((w >> 8) & 0xFF) == 0 ||
+						((w >> 16) & 0xFF) == 0 || ((w >> 24) & 0xFF) == 0) {
+					break;
+				}
+			}
+			Vector<uint32_t> words;
+			for (uint32_t i = pos + 1; i < pos + wc; i++) {
+				uint32_t w = read_word(data, len, i);
+				if (i >= name_end && w == var_id) {
+					continue;
+				}
+				words.push_back(w);
+			}
+			push_word(out, ((uint32_t)(words.size() + 1) << 16) | (uint32_t)OP_ENTRY_POINT);
+			for (int i = 0; i < words.size(); i++) {
+				push_word(out, words[i]);
+			}
+			pos += wc;
+			continue;
+		}
+		if (op == OP_VARIABLE && wc >= 4 && read_word(data, len, pos + 2) == var_id) {
+			push_word(out, (4u << 16) | (uint32_t)OP_TYPE_POINTER);
+			push_word(out, private_ptr_type);
+			push_word(out, SC_PRIVATE);
+			push_word(out, pointee);
+			push_word(out, (4u << 16) | (uint32_t)OP_VARIABLE);
+			push_word(out, private_ptr_type);
+			push_word(out, var_id);
+			push_word(out, SC_PRIVATE);
+			pos += wc;
+			continue;
+		}
+		append_bytes(out, data, pos * 4, wc * 4);
+		pos += wc;
+	}
+	return out;
+}
+
 // ---- strip_memory_barrier ----
 
 Vector<uint8_t> strip_memory_barrier(const Vector<uint8_t> &p_bytes) {
@@ -3043,6 +3170,7 @@ Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes) {
 	spv = fix_depth2_images(spv).bytes;
 	spv = negate_position_y(spv);
 	spv = strip_restrict_decoration(spv);
+	spv = privatize_point_coord(spv);
 	spv = strip_memory_barrier(spv);
 	spv = fix_nonfinite_literals(spv);
 	spv = flatten_binding_arrays(spv);
