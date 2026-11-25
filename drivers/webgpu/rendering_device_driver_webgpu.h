@@ -64,6 +64,7 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 		uint32_t gap_bind_group_calls = 0;
 		uint32_t first_instance_draws = 0;
 		uint32_t ring_overflows = 0;
+		uint32_t depth_copies = 0;
 		double last_log_time = 0;
 		uint32_t frames_since_log = 0;
 		void reset() {
@@ -78,6 +79,7 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 			gap_bind_group_calls = 0;
 			first_instance_draws = 0;
 			ring_overflows = 0;
+			depth_copies = 0;
 		}
 	} perf;
 
@@ -119,7 +121,7 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	WGPUBindGroupLayout depth_copy_bgl = nullptr;
 	WGPURenderPipeline depth_copy_pipeline = nullptr;
 	WGPUTextureView _depth_float_copy_view(WGTexture *p_tex);
-	void _mark_depth_float_copies_dirty(WGFramebuffer *p_fb);
+	void _mark_depth_float_copies_dirty(WGCommandBuffer *p_cmd);
 	void _refresh_depth_float_copies(WGCommandBuffer *p_cmd);
 	void _free_depth_float_copy(WGPUTexture p_handle);
 	bool float32_filterable_supported = false;

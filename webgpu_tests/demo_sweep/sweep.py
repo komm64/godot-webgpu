@@ -420,6 +420,7 @@ def run_check(
         "warnings": int(data.get("warnings") or 0),
         "first_errors": list(data.get("first_errors") or [])[:5],
         "shot": shot_rel,
+        "perf": data.get("perf"),
     }
 
 
@@ -662,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
                     "warnings": check.get("warnings", 0),
                     "first_errors": check["first_errors"],
                     "shot": check["shot"],
+                    "perf": check.get("perf"),
                 }
             )
     except KeyboardInterrupt:

@@ -255,11 +255,15 @@ async function main() {
   let cdp = null;
   let shotWritten = null;
   let sweep = { gpu: [], frames: 0, firstFrame: null };
+  // Last once-a-second driver counter line ("[PERF] fps=..."), if any.
+  let perfLine = null;
 
   try {
     cdp = await connectCdp(target.webSocketDebuggerUrl);
 
     cdp.on('Runtime.consoleAPICalled', (params) => {
+      const first = params.args && params.args[0] && params.args[0].value;
+      if (typeof first === 'string' && first.startsWith('[PERF] fps=')) perfLine = first;
       if (params.type === 'error' || params.type === 'assert') {
         const text = (params.args || []).map(formatRemoteArg).join(' ').trim();
         if (text) jsErrors.push(text.slice(0, 300));
@@ -361,6 +365,7 @@ async function main() {
     warnings: js.warnings.length,
     first_errors: firstErrors,
     shot: shotWritten,
+    perf: perfLine,
   };
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }

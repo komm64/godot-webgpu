@@ -260,6 +260,8 @@ struct WGPipelineWrapper {
 	// via wgpuRenderPassEncoderSetStencilReference(). Stored here at creation time,
 	// applied when the pipeline is bound.
 	uint32_t stencil_reference = 0;
+	// Whether draws with this pipeline write the depth attachment.
+	bool depth_write = false;
 	// WebGPU bakes stripIndexFormat into the pipeline state, but Godot only knows
 	// the index format at bind time. For strip topologies we create both Uint16 and
 	// Uint32 variants and select the correct one at draw time.
@@ -390,6 +392,8 @@ struct WGCommandBuffer {
 		WGPUIndexFormat current_index_format = WGPUIndexFormat_Uint32;
 		uint32_t render_area_width = 0;
 		uint32_t render_area_height = 0;
+		// Whether the current subpass cleared or drew into its depth attachment.
+		bool depth_written = false;
 
 		// Redundant state elimination for per-draw calls.
 		WGPUBuffer current_index_buffer = nullptr;

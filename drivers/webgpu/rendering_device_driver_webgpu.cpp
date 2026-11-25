@@ -2200,15 +2200,24 @@ WGPUTextureView RenderingDeviceDriverWebGPU::_depth_float_copy_view(WGTexture *p
 	return copy.view;
 }
 
-void RenderingDeviceDriverWebGPU::_mark_depth_float_copies_dirty(WGFramebuffer *p_fb) {
-	if (p_fb == nullptr || depth_float_copies.is_empty()) {
+void RenderingDeviceDriverWebGPU::_mark_depth_float_copies_dirty(WGCommandBuffer *p_cmd) {
+	// Only a subpass that cleared or drew into its depth attachment changes it;
+	// one that just tests against it leaves the copy valid.
+	WGCommandBuffer::RenderState &rs = p_cmd->render_state;
+	const bool written = rs.depth_written;
+	rs.depth_written = false;
+	if (!written || depth_float_copies.is_empty() || rs.render_pass == nullptr || rs.framebuffer == nullptr ||
+			rs.current_subpass >= rs.render_pass->subpasses.size()) {
 		return;
 	}
-	for (WGTexture *att : p_fb->attachments) {
-		if (att && att->view_source && _is_depth_format(att->format)) {
-			if (DepthFloatCopy *copy = depth_float_copies.getptr(att->view_source)) {
-				copy->dirty = true;
-			}
+	const uint32_t idx = rs.render_pass->subpasses[rs.current_subpass].depth_stencil_reference.attachment;
+	if (idx == RDD::AttachmentReference::UNUSED || idx >= rs.framebuffer->attachments.size()) {
+		return;
+	}
+	const WGTexture *att = rs.framebuffer->attachments[idx];
+	if (att && att->view_source) {
+		if (DepthFloatCopy *copy = depth_float_copies.getptr(att->view_source)) {
+			copy->dirty = true;
 		}
 	}
 }
@@ -2225,6 +2234,7 @@ void RenderingDeviceDriverWebGPU::_refresh_depth_float_copies(WGCommandBuffer *p
 			p_cmd->invalidate_bind_groups();
 			ended = true;
 		}
+		perf.depth_copies++;
 		WGPURenderPassColorAttachment att = {};
 		att.view = copy.view;
 		att.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
@@ -7858,6 +7868,7 @@ void RenderingDeviceDriverWebGPU::command_begin_render_pass(CommandBufferID p_cm
 				} else {
 					ds_att.depthStoreOp = map_store_op(attach_desc.store_op);
 				}
+				cmd->render_state.depth_written = ds_att.depthLoadOp == WGPULoadOp_Clear;
 				if (ds_att.depthLoadOp == WGPULoadOp_Clear && ds_ref.attachment < p_clear_values.size()) {
 					ds_att.depthClearValue = p_clear_values[ds_ref.attachment].depth;
 				} else {
@@ -7970,7 +7981,7 @@ void RenderingDeviceDriverWebGPU::command_end_render_pass(CommandBufferID p_cmd_
 		wgpuRenderPassEncoderRelease(cmd->render_encoder);
 		cmd->render_encoder = nullptr;
 	}
-	_mark_depth_float_copies_dirty(cmd->render_state.framebuffer);
+	_mark_depth_float_copies_dirty(cmd);
 	cmd->active_encoder = WGCommandBuffer::NONE;
 	cmd->render_state = {};
 }
@@ -7986,7 +7997,7 @@ void RenderingDeviceDriverWebGPU::command_next_render_subpass(CommandBufferID p_
 		cmd->render_encoder = nullptr;
 	}
 
-	_mark_depth_float_copies_dirty(cmd->render_state.framebuffer);
+	_mark_depth_float_copies_dirty(cmd);
 	_refresh_depth_float_copies(cmd);
 
 	// Advance to next subpass.
@@ -8172,6 +8183,7 @@ void RenderingDeviceDriverWebGPU::command_bind_render_pipeline(CommandBufferID p
 	ERR_FAIL_NULL(pw);
 	ERR_FAIL_COND(!cmd->render_encoder);
 
+	cmd->render_state.depth_written |= pw->depth_write;
 	if (cmd->render_state.current_pipeline == pw) {
 		return; // Pipeline already bound, skip redundant call.
 	}
@@ -9220,6 +9232,7 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 	pw->specialized_modules[SHADER_STAGE_VERTEX] = specialized_vertex;
 	pw->specialized_modules[SHADER_STAGE_FRAGMENT] = specialized_fragment;
 	pw->stencil_reference = p_depth_stencil_state.front_op.reference;
+	pw->depth_write = ds_ptr != nullptr && p_depth_stencil_state.enable_depth_write;
 	pw->is_strip = is_strip;
 	if (is_strip) {
 		// Create a Uint16 variant — WebGPU bakes stripIndexFormat into the pipeline,
@@ -9691,11 +9704,12 @@ void RenderingDeviceDriverWebGPU::begin_segment(uint32_t p_frame_index, uint32_t
 				' RP/f=' + $4 +
 				' SetVB/f=' + $5 +
 				' FI/f=' + $6 +
-				' RingOF/f=' + $7);
+				' RingOF/f=' + $7 +
+				' DepthCopy/f=' + ($8 / $9).toFixed(2));
 		}, fps, perf.draw_calls / f, perf.set_bind_group_calls / f,
 				perf.push_constant_writes / f, perf.render_passes / f,
 				perf.set_vertex_buffer_calls / f, perf.first_instance_draws / f,
-				perf.ring_overflows / f);
+				perf.ring_overflows / f, perf.depth_copies, f);
 		const WGCreationStats &cs = _creation_stats;
 		EM_ASM({
 			console.log('[PERF] create: shaders=' + $0 + '/' + $12 + '/' + $1.toFixed(0) + 'ms tint=' + $2 + '/' + $3.toFixed(0) + 'ms baked=' + $13 + ' precompiled=' + $4 + ' disk=' + $11 +
