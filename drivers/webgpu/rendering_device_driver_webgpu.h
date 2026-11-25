@@ -103,6 +103,25 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	// are synchronized only to shadows of the same source view; a single owning
 	// texture can also have smaller mip or layer views registered in this map.
 	HashMap<WGPUTexture, LocalVector<RWShadowCopyTarget>> rw_shadow_copy_map;
+
+	// Float copies of depth textures bound to float texture slots (a texture2D
+	// or sampler2D reading a depth buffer: the Mobile depth of field, user
+	// shaders with DEPTH_TEXTURE). WebGPU cannot sample depth as float, so
+	// such a slot reads an R32Float copy (R16Float without float32-filterable)
+	// that is redrawn before the next pass after the depth texture changed.
+	struct DepthFloatCopy {
+		WGPUTexture texture = nullptr;
+		WGPUTextureView view = nullptr;
+		WGPUBindGroup bind_group = nullptr;
+		bool dirty = true;
+	};
+	HashMap<WGPUTexture, DepthFloatCopy> depth_float_copies; // Keyed by the depth texture's view_source.
+	WGPUBindGroupLayout depth_copy_bgl = nullptr;
+	WGPURenderPipeline depth_copy_pipeline = nullptr;
+	WGPUTextureView _depth_float_copy_view(WGTexture *p_tex);
+	void _mark_depth_float_copies_dirty(WGFramebuffer *p_fb);
+	void _refresh_depth_float_copies(WGCommandBuffer *p_cmd);
+	void _free_depth_float_copy(WGPUTexture p_handle);
 	bool float32_filterable_supported = false;
 	bool float32_blendable_supported = false;
 	// Optional texture-compression features (BC, ETC2, ASTC). Requested by the JS

@@ -2097,6 +2097,162 @@ RDD::TextureID RenderingDeviceDriverWebGPU::texture_create_shared_from_slice(Tex
 	return TextureID(tex);
 }
 
+// ---- Float copies of depth textures ----
+
+WGPUTextureView RenderingDeviceDriverWebGPU::_depth_float_copy_view(WGTexture *p_tex) {
+	// One 2D level and layer covers the depth buffers RD samples this way.
+	if (p_tex == nullptr || p_tex->view_source == nullptr || p_tex->sample_count != 1 ||
+			p_tex->view_dimension != WGPUTextureViewDimension_2D || p_tex->base_mipmap != 0 || p_tex->base_layer != 0 ||
+			!(p_tex->usage & WGPUTextureUsage_TextureBinding)) {
+		return nullptr;
+	}
+	if (DepthFloatCopy *existing = depth_float_copies.getptr(p_tex->view_source)) {
+		return existing->view;
+	}
+	const WGPUTextureFormat format = float32_filterable_supported ? WGPUTextureFormat_R32Float : WGPUTextureFormat_R16Float;
+
+	if (depth_copy_pipeline == nullptr) {
+		static const char *code =
+				"@group(0) @binding(0) var depth: texture_depth_2d;\n"
+				"@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {\n"
+				"  let uv = vec2f(f32((i << 1u) & 2u), f32(i & 2u));\n"
+				"  return vec4f(uv * 2.0 - 1.0, 0.0, 1.0);\n"
+				"}\n"
+				"@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {\n"
+				"  return vec4f(textureLoad(depth, vec2i(p.xy), 0), 0.0, 0.0, 1.0);\n"
+				"}\n";
+		WGPUShaderSourceWGSL wgsl = {};
+		wgsl.chain.sType = WGPUSType_ShaderSourceWGSL;
+		wgsl.code = { code, WGPU_STRLEN };
+		WGPUShaderModuleDescriptor md = {};
+		md.nextInChain = &wgsl.chain;
+		md.label = { "depth_float_copy", WGPU_STRLEN };
+		WGPUShaderModule module = wgpuDeviceCreateShaderModule(device, &md);
+
+		WGPUBindGroupLayoutEntry entry = {};
+		entry.binding = 0;
+		entry.visibility = WGPUShaderStage_Fragment;
+		entry.texture.sampleType = WGPUTextureSampleType_Depth;
+		entry.texture.viewDimension = WGPUTextureViewDimension_2D;
+		WGPUBindGroupLayoutDescriptor bgl_desc = {};
+		bgl_desc.entryCount = 1;
+		bgl_desc.entries = &entry;
+		depth_copy_bgl = wgpuDeviceCreateBindGroupLayout(device, &bgl_desc);
+
+		WGPUPipelineLayoutDescriptor pl_desc = {};
+		pl_desc.bindGroupLayoutCount = 1;
+		pl_desc.bindGroupLayouts = &depth_copy_bgl;
+		WGPUPipelineLayout layout = wgpuDeviceCreatePipelineLayout(device, &pl_desc);
+
+		WGPUColorTargetState target = {};
+		target.format = format;
+		target.writeMask = WGPUColorWriteMask_All;
+		WGPUFragmentState frag = {};
+		frag.module = module;
+		frag.entryPoint = { "fs", WGPU_STRLEN };
+		frag.targetCount = 1;
+		frag.targets = &target;
+		WGPURenderPipelineDescriptor desc = {};
+		desc.label = { "depth_float_copy", WGPU_STRLEN };
+		desc.layout = layout;
+		desc.vertex.module = module;
+		desc.vertex.entryPoint = { "vs", WGPU_STRLEN };
+		desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+		desc.multisample.count = 1;
+		desc.multisample.mask = 0xFFFFFFFFu;
+		desc.fragment = &frag;
+		depth_copy_pipeline = wgpuDeviceCreateRenderPipeline(device, &desc);
+		wgpuPipelineLayoutRelease(layout);
+		wgpuShaderModuleRelease(module);
+		ERR_FAIL_NULL_V(depth_copy_pipeline, nullptr);
+	}
+
+	DepthFloatCopy copy;
+	WGPUTextureDescriptor td = {};
+	td.label = { "depth_float_copy", WGPU_STRLEN };
+	td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
+	td.dimension = WGPUTextureDimension_2D;
+	td.size = { p_tex->width, p_tex->height, 1 };
+	td.format = format;
+	td.mipLevelCount = 1;
+	td.sampleCount = 1;
+	copy.texture = wgpuDeviceCreateTexture(device, &td);
+	ERR_FAIL_NULL_V(copy.texture, nullptr);
+	copy.view = wgpuTextureCreateView(copy.texture, nullptr);
+
+	WGPUTextureViewDescriptor vd = {};
+	vd.dimension = WGPUTextureViewDimension_2D;
+	vd.mipLevelCount = 1;
+	vd.arrayLayerCount = 1;
+	vd.aspect = WGPUTextureAspect_DepthOnly;
+	WGPUTextureView depth_view = wgpuTextureCreateView(p_tex->view_source, &vd);
+	WGPUBindGroupEntry bge = {};
+	bge.binding = 0;
+	bge.textureView = depth_view;
+	WGPUBindGroupDescriptor bg_desc = {};
+	bg_desc.layout = depth_copy_bgl;
+	bg_desc.entryCount = 1;
+	bg_desc.entries = &bge;
+	copy.bind_group = wgpuDeviceCreateBindGroup(device, &bg_desc);
+	wgpuTextureViewRelease(depth_view);
+
+	depth_float_copies.insert(p_tex->view_source, copy);
+	return copy.view;
+}
+
+void RenderingDeviceDriverWebGPU::_mark_depth_float_copies_dirty(WGFramebuffer *p_fb) {
+	if (p_fb == nullptr || depth_float_copies.is_empty()) {
+		return;
+	}
+	for (WGTexture *att : p_fb->attachments) {
+		if (att && att->view_source && _is_depth_format(att->format)) {
+			if (DepthFloatCopy *copy = depth_float_copies.getptr(att->view_source)) {
+				copy->dirty = true;
+			}
+		}
+	}
+}
+
+void RenderingDeviceDriverWebGPU::_refresh_depth_float_copies(WGCommandBuffer *p_cmd) {
+	bool ended = false;
+	for (KeyValue<WGPUTexture, DepthFloatCopy> &kv : depth_float_copies) {
+		DepthFloatCopy &copy = kv.value;
+		if (!copy.dirty) {
+			continue;
+		}
+		if (!ended) {
+			p_cmd->end_active_encoder();
+			p_cmd->invalidate_bind_groups();
+			ended = true;
+		}
+		WGPURenderPassColorAttachment att = {};
+		att.view = copy.view;
+		att.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+		att.loadOp = WGPULoadOp_Clear;
+		att.storeOp = WGPUStoreOp_Store;
+		WGPURenderPassDescriptor rp_desc = {};
+		rp_desc.colorAttachmentCount = 1;
+		rp_desc.colorAttachments = &att;
+		WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(p_cmd->encoder, &rp_desc);
+		wgpuRenderPassEncoderSetPipeline(pass, depth_copy_pipeline);
+		wgpuRenderPassEncoderSetBindGroup(pass, 0, copy.bind_group, 0, nullptr);
+		wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+		wgpuRenderPassEncoderEnd(pass);
+		wgpuRenderPassEncoderRelease(pass);
+		copy.dirty = false;
+	}
+}
+
+void RenderingDeviceDriverWebGPU::_free_depth_float_copy(WGPUTexture p_handle) {
+	if (DepthFloatCopy *copy = depth_float_copies.getptr(p_handle)) {
+		wgpuBindGroupRelease(copy->bind_group);
+		wgpuTextureViewRelease(copy->view);
+		wgpuTextureDestroy(copy->texture);
+		wgpuTextureRelease(copy->texture);
+		depth_float_copies.erase(p_handle);
+	}
+}
+
 void RenderingDeviceDriverWebGPU::texture_free(TextureID p_texture) {
 	WGTexture *tex = (WGTexture *)(p_texture.id);
 	ERR_FAIL_NULL(tex);
@@ -2140,6 +2296,7 @@ void RenderingDeviceDriverWebGPU::texture_free(TextureID p_texture) {
 	// so stale handles can't match a recycled WGPUTexture later.
 	if (tex->handle) {
 		rw_shadow_copy_map.erase(tex->handle);
+		_free_depth_float_copy(tex->handle);
 	}
 
 	if (tex->default_view) {
@@ -5360,7 +5517,14 @@ RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<Bou
 						// Fix depth/float mismatch: if layout expects Float but
 						// texture has a depth format (common with Godot's depth
 						// fallback textures), substitute a float fallback texture.
-						if (expected_sample == WGPUTextureSampleType_Float &&
+						WGPUTextureView depth_copy = nullptr;
+						if (expected_sample == WGPUTextureSampleType_Float && _is_depth_format(tex->format) &&
+								expected_dim == WGPUTextureViewDimension_2D) {
+							depth_copy = _depth_float_copy_view(tex);
+						}
+						if (depth_copy) {
+							entry.textureView = depth_copy;
+						} else if (expected_sample == WGPUTextureSampleType_Float &&
 								_is_depth_format(tex->format) &&
 								fallback_float_texture_view != nullptr) {
 							// Also check if we need cube dimension for the depth fallback.
@@ -5479,6 +5643,10 @@ RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<Bou
 								us->temp_views.push_back(depth_view);
 							}
 							te.textureView = depth_view ? depth_view : tex->default_view;
+						} else if (_is_depth_format(tex->format) && swt_expected_dim == WGPUTextureViewDimension_2D &&
+								_depth_float_copy_view(tex) != nullptr) {
+							// Combined sampler+texture bindings are always Float.
+							te.textureView = _depth_float_copy_view(tex);
 						} else if (_is_depth_format(tex->format) && fallback_float_texture_view != nullptr) {
 							// Fix depth/float mismatch: combined sampler+texture bindings
 							// are always Float. If a depth fallback texture is provided,
@@ -5912,11 +6080,17 @@ WGPUBindGroup RenderingDeviceDriverWebGPU::_get_compatible_bind_group(WGUniformS
 						}
 					}
 				}
-				// Source was Depth, target expects Float → substitute fallback.
+				// Source was Depth, target expects Float → bind the depth texture's
+				// float copy, or the fallback when it cannot have one.
 				if (source_tex_sample == WGPUTextureSampleType_Depth &&
-						target_tex_sample == WGPUTextureSampleType_Float &&
-						fallback_float_texture_view != nullptr) {
-					entry.textureView = fallback_float_texture_view;
+						target_tex_sample == WGPUTextureSampleType_Float) {
+					WGTexture *bound = p_us->bound_textures.has(entry.binding) ? p_us->bound_textures[entry.binding] : nullptr;
+					WGPUTextureView depth_copy = _depth_float_copy_view(bound);
+					if (depth_copy) {
+						entry.textureView = depth_copy;
+					} else if (fallback_float_texture_view != nullptr) {
+						entry.textureView = fallback_float_texture_view;
+					}
 				}
 
 				// --- Texture view dimension adaptation ---
@@ -7497,6 +7671,7 @@ void RenderingDeviceDriverWebGPU::command_begin_render_pass(CommandBufferID p_cm
 	ERR_FAIL_NULL(cmd);
 	ERR_FAIL_NULL(rp);
 	ERR_FAIL_NULL(fb);
+	_refresh_depth_float_copies(cmd);
 
 	perf.render_passes++;
 
@@ -7795,6 +7970,7 @@ void RenderingDeviceDriverWebGPU::command_end_render_pass(CommandBufferID p_cmd_
 		wgpuRenderPassEncoderRelease(cmd->render_encoder);
 		cmd->render_encoder = nullptr;
 	}
+	_mark_depth_float_copies_dirty(cmd->render_state.framebuffer);
 	cmd->active_encoder = WGCommandBuffer::NONE;
 	cmd->render_state = {};
 }
@@ -7809,6 +7985,9 @@ void RenderingDeviceDriverWebGPU::command_next_render_subpass(CommandBufferID p_
 		wgpuRenderPassEncoderRelease(cmd->render_encoder);
 		cmd->render_encoder = nullptr;
 	}
+
+	_mark_depth_float_copies_dirty(cmd->render_state.framebuffer);
+	_refresh_depth_float_copies(cmd);
 
 	// Advance to next subpass.
 	cmd->render_state.current_subpass++;
@@ -9070,6 +9249,7 @@ void RenderingDeviceDriverWebGPU::command_bind_compute_pipeline(CommandBufferID 
 		cmd->end_active_encoder();
 	}
 	if (cmd->active_encoder != WGCommandBuffer::COMPUTE) {
+		_refresh_depth_float_copies(cmd);
 		WGPUComputePassDescriptor pass_desc = {};
 		cmd->compute_encoder = wgpuCommandEncoderBeginComputePass(cmd->encoder, &pass_desc);
 		cmd->active_encoder = WGCommandBuffer::COMPUTE;
