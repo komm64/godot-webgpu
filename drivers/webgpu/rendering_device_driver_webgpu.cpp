@@ -5930,10 +5930,29 @@ WGPUBindGroup RenderingDeviceDriverWebGPU::_get_compatible_bind_group(WGUniformS
 						break;
 					}
 				}
+				// The entry's view was made for the source layout, which may differ
+				// from the texture's own dimension: a binding the source shader does
+				// not use gets a 2D layout entry, so a 2D-array lightmap was bound
+				// through a 2D view there.
+				WGPUTextureViewDimension source_dim = WGPUTextureViewDimension_Undefined;
+				if (p_us->source_shader && p_set_idx < (uint32_t)p_us->source_shader->bind_group_infos.size()) {
+					for (const auto &bge : p_us->source_shader->bind_group_infos[p_set_idx].entries) {
+						if (bge.layout_entry.binding == entry.binding &&
+								bge.layout_entry.texture.viewDimension != WGPUTextureViewDimension_Undefined) {
+							source_dim = bge.layout_entry.texture.viewDimension;
+							break;
+						}
+					}
+				}
 				if (target_dim != WGPUTextureViewDimension_Undefined &&
 						p_us->bound_textures.has(entry.binding)) {
 					WGTexture *tex = p_us->bound_textures[entry.binding];
-					if (tex && tex->view_dimension != target_dim && tex->view_source) {
+					const WGPUTextureViewDimension current_dim =
+							source_dim != WGPUTextureViewDimension_Undefined ? source_dim : (tex ? tex->view_dimension : target_dim);
+					if (tex && current_dim != target_dim && target_dim == tex->view_dimension && tex->default_view &&
+							entry.textureView != fallback_float_texture_view && entry.textureView != fallback_cube_texture_view) {
+						entry.textureView = tex->default_view;
+					} else if (tex && current_dim != target_dim && tex->view_source) {
 						// A view's dimension must structurally match the real texture's
 						// own dimension (3D texture -> 3D view only; 2D texture -> never
 						// a 3D view) -- the same check applied in the general uniform-
