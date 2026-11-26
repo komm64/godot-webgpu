@@ -9851,6 +9851,15 @@ uint64_t RenderingDeviceDriverWebGPU::limit_get(Limit p_limit) {
 	}
 }
 
+RenderingDeviceDriver::DriverWorkarounds RenderingDeviceDriverWebGPU::get_driver_workarounds() const {
+	DriverWorkarounds workarounds;
+	// Pipelines are created on the calling thread here (see PipelineHashMapRD),
+	// so a draw never waits on a background compile and has no use for an
+	// ubershader; the browser takes 1-2 s to compile each of them.
+	workarounds.disable_ubershaders = true;
+	return workarounds;
+}
+
 uint64_t RenderingDeviceDriverWebGPU::api_trait_get(ApiTrait p_trait) {
 	switch (p_trait) {
 		case API_TRAIT_HONORS_PIPELINE_BARRIERS: return 0; // No barriers in WebGPU.

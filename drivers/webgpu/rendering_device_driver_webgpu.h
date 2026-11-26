@@ -708,6 +708,7 @@ public:
 	virtual uint64_t limit_get(Limit p_limit) override final;
 	/// Query an API trait (e.g., texture data row pitch step).
 	virtual uint64_t api_trait_get(ApiTrait p_trait) override final;
+	virtual DriverWorkarounds get_driver_workarounds() const override final;
 	/// Check if a feature is supported (multiview, VRS, etc.).
 	virtual bool has_feature(Features p_feature) override final;
 	/// Get multiview capabilities. Not supported in WebGPU.
