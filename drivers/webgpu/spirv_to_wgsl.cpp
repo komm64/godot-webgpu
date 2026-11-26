@@ -52,6 +52,13 @@ char *webgpu_spirv_to_wgsl(const uint8_t *p_spv, int p_size, String *r_error) {
 	input.resize(p_size);
 	memcpy(input.ptrw(), p_spv, p_size);
 
+	if (spirv_preprocess::uses_view_index(input)) {
+		if (r_error) {
+			*r_error = "multiview (gl_ViewIndex) is not supported by WebGPU";
+		}
+		return nullptr;
+	}
+
 	// Keep specialization constants as overrides when Tint accepts them;
 	// otherwise translate again with their default values baked in.
 	const bool has_spec_constants = spirv_preprocess::has_spec_constants(input);

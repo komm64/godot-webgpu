@@ -196,6 +196,10 @@ Vector<uint8_t> strip_writeonly_storage_decoration(const Vector<uint8_t> &p_byte
 // only ever needs to react to, the final preprocessed form.
 Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes);
 
+// True when the module reads gl_ViewIndex. WebGPU has no multiview, and Tint
+// stops the process on that builtin instead of reporting an error.
+bool uses_view_index(const Vector<uint8_t> &p_bytes);
+
 // True when the module declares any specialization constant.
 bool has_spec_constants(const Vector<uint8_t> &p_bytes);
 

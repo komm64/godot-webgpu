@@ -3156,6 +3156,29 @@ Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes) {
 	return out;
 }
 
+// ---- uses_view_index ----
+
+bool uses_view_index(const Vector<uint8_t> &p_bytes) {
+	static constexpr uint32_t BUILTIN_VIEW_INDEX = 4440;
+	const uint8_t *data = p_bytes.ptr();
+	const int64_t len = p_bytes.size();
+	const uint32_t total_words = (uint32_t)(len / 4);
+
+	uint32_t pos = 5;
+	while (pos < total_words) {
+		const uint32_t w0 = read_word(data, len, pos);
+		const uint32_t wc = w0 >> 16;
+		if (wc == 0 || pos + wc > total_words) {
+			return false;
+		}
+		if ((w0 & 0xFFFF) == OP_DECORATE && wc >= 4 && read_word(data, len, pos + 2) == DECO_BUILTIN && read_word(data, len, pos + 3) == BUILTIN_VIEW_INDEX) {
+			return true;
+		}
+		pos += wc;
+	}
+	return false;
+}
+
 // ---- has_spec_constants ----
 
 bool has_spec_constants(const Vector<uint8_t> &p_bytes) {
