@@ -5345,6 +5345,16 @@ bool RenderingDevice::render_pipeline_is_valid(RID p_pipeline) {
 	return render_pipeline_owner.owns(p_pipeline);
 }
 
+void RenderingDevice::render_pipeline_set_deferred_creation(bool p_enable) {
+	driver->pipeline_set_deferred_creation(p_enable);
+}
+
+bool RenderingDevice::render_pipeline_is_ready(RID p_pipeline, bool p_wait) {
+	RenderPipeline *pipeline = render_pipeline_owner.get_or_null(p_pipeline);
+	ERR_FAIL_NULL_V(pipeline, true);
+	return driver->pipeline_is_ready(pipeline->driver_id, p_wait);
+}
+
 RID RenderingDevice::compute_pipeline_create(RID p_shader, const Vector<PipelineSpecializationConstant> &p_specialization_constants) {
 	Shader *shader;
 

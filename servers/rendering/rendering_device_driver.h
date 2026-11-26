@@ -677,6 +677,13 @@ public:
 
 	virtual void pipeline_free(PipelineID p_pipeline) = 0;
 
+	// Deferred creation lets render_pipeline_create() return a pipeline the driver
+	// finishes later. Only drivers that can't compile pipelines on worker threads
+	// need it; by default every pipeline is ready as soon as it's created.
+	virtual void pipeline_set_deferred_creation(bool p_enable) {}
+	// With p_wait, the driver must finish the pipeline before returning true.
+	virtual bool pipeline_is_ready(PipelineID p_pipeline, bool p_wait) { return true; }
+
 	// ----- BINDING -----
 
 	virtual void command_bind_push_constants(CommandBufferID p_cmd_buffer, ShaderID p_shader, uint32_t p_first_index, VectorView<uint32_t> p_data) = 0;

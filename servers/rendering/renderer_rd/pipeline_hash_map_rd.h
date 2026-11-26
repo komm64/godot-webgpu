@@ -57,18 +57,35 @@ private:
 	HashMap<uint32_t, WorkerThreadPool::TaskID> compilation_tasks;
 	Mutex local_mutex;
 
-	bool _add_new_pipelines_to_map() {
+	bool _add_new_pipelines_to_map(const uint32_t *p_wait_hash = nullptr) {
 		thread_local Vector<uint32_t> hashes_added;
 		hashes_added.clear();
 
 		{
 			MutexLock lock(compiled_queue_mutex);
+#ifdef WEB_ENABLED
+			// Pipelines the driver is still finishing stay queued until they're ready.
+			uint32_t pending = 0;
+			for (uint32_t i = 0; i < compiled_queue.size(); i++) {
+				const Pair<uint32_t, RID> pair = compiled_queue[i];
+				const bool wait = p_wait_hash != nullptr && *p_wait_hash == pair.first;
+				if (pair.second.is_valid() && !RD::get_singleton()->render_pipeline_is_ready(pair.second, wait)) {
+					compiled_queue[pending++] = pair;
+					continue;
+				}
+				hash_map[pair.first] = pair.second;
+				hashes_added.push_back(pair.first);
+			}
+
+			compiled_queue.resize(pending);
+#else
 			for (const Pair<uint32_t, RID> &pair : compiled_queue) {
 				hash_map[pair.first] = pair.second;
 				hashes_added.push_back(pair.first);
 			}
 
 			compiled_queue.clear();
+#endif
 		}
 
 		{
@@ -149,9 +166,12 @@ public:
 
 		// Browser WebGPU handles are scoped to the main JavaScript realm, so
 		// Web builds must create pipelines on the rendering thread. Other
-		// platforms keep using background compilation.
+		// platforms keep using background compilation. Pipelines nobody waits
+		// for may be finished later by the driver, like a background task.
 #ifdef WEB_ENABLED
+		RD::get_singleton()->render_pipeline_set_deferred_creation(!p_high_priority);
 		(creation_object->*creation_function)(p_key);
+		RD::get_singleton()->render_pipeline_set_deferred_creation(false);
 #else
 		WorkerThreadPool::TaskID task_id = WorkerThreadPool::get_singleton()->add_template_task(creation_object, creation_function, p_key, p_high_priority, "PipelineCompilation");
 		compilation_tasks.insert(p_key_hash, task_id);
@@ -179,6 +199,10 @@ public:
 		if (task_id_to_wait != WorkerThreadPool::INVALID_TASK_ID) {
 			WorkerThreadPool::get_singleton()->wait_for_task_completion(task_id_to_wait);
 		}
+
+#ifdef WEB_ENABLED
+		_add_new_pipelines_to_map(&p_key_hash);
+#endif
 	}
 
 	// Retrieve a pipeline. It'll return an empty pipeline if it's not available yet, but it'll be guaranteed to succeed if 'wait for compilation' is true and stall as necessary. Source is just an optional number to aid debugging.
@@ -220,6 +244,16 @@ public:
 	void clear_pipelines() {
 		_wait_for_all_pipelines();
 		_add_new_pipelines_to_map();
+
+#ifdef WEB_ENABLED
+		{
+			MutexLock lock(compiled_queue_mutex);
+			for (const Pair<uint32_t, RID> &pair : compiled_queue) {
+				RD::get_singleton()->free_rid(pair.second);
+			}
+			compiled_queue.clear();
+		}
+#endif
 
 		for (KeyValue<uint32_t, RID> entry : hash_map) {
 			RD::get_singleton()->free_rid(entry.value);

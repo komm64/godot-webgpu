@@ -83,6 +83,12 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 		}
 	} perf;
 
+	// Set while Godot creates pipelines it doesn't wait for (see pipeline_set_deferred_creation()).
+	bool pipeline_deferred_creation = false;
+	static void _render_pipeline_created(WGPUCreatePipelineAsyncStatus p_status, WGPURenderPipeline p_pipeline, WGPUStringView p_message, void *p_userdata1, void *p_userdata2);
+	void _render_pipeline_create_async(WGPipelineWrapper *p_pw, const WGPURenderPipelineDescriptor &p_desc, WGPURenderPipeline *r_handle);
+	void _render_pipeline_finish_now(WGPipelineWrapper *p_pw);
+
 	Capabilities capabilities;
 	MultiviewCapabilities multiview_capabilities;
 	FragmentShadingRateCapabilities fsr_capabilities;
@@ -558,6 +564,8 @@ public:
 
 	/// Release a render or compute pipeline.
 	virtual void pipeline_free(PipelineID p_pipeline) override final;
+	virtual void pipeline_set_deferred_creation(bool p_enable) override final;
+	virtual bool pipeline_is_ready(PipelineID p_pipeline, bool p_wait) override final;
 	/// Write push constant data. Emulated via a ring buffer (WebGPU has no push constants).
 	virtual void command_bind_push_constants(CommandBufferID p_cmd_buffer, ShaderID p_shader, uint32_t p_first_index, VectorView<uint32_t> p_data) override final;
 	/// Stub — WebGPU has no pipeline cache. Returns true.
