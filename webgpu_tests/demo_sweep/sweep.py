@@ -77,7 +77,16 @@ def discover_demos(demos_dir: Path, filter_substr: str | None) -> list[tuple[str
     return found
 
 
+# Demos that need Forward+ features the Mobile renderer lacks, so they fail the
+# same way with upstream Godot on Mobile (Web always renders with Mobile).
+FORWARD_PLUS_ONLY = {
+    "compute/post_shader",  # Mobile's color buffer can't be a storage image.
+}
+
+
 def unsupported_reason(rel: str) -> str | None:
+    if rel in FORWARD_PLUS_ONLY:
+        return "needs Forward+ (fails on Mobile upstream too)"
     for prefix in UNSUPPORTED_PREFIXES:
         if rel.startswith(prefix):
             return f"unsupported on web ({prefix.rstrip('/_')})"
