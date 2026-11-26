@@ -205,9 +205,13 @@ bool spec_constants_fit_overrides(const Vector<uint8_t> &p_bytes);
 
 // Run every pass above, in order, to turn glslang SPIR-V into input Tint
 // accepts. The driver and the tint_cli precompile tool both use this.
-// Specialization constants are kept as WGSL overrides, so pipelines can set
-// them without translating the shader again, unless p_freeze_spec_constants
-// is set or they can't be overrides; then their default values are baked in.
-Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes, bool p_freeze_spec_constants = false);
+// Specialization constants are kept for Tint to turn into WGSL overrides, so
+// pipelines can set them without translating the shader again, unless
+// p_freeze_spec_constants bakes in their default values instead.
+Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes, bool p_freeze_spec_constants);
+
+// First line of WGSL translated with frozen specialization constants. The
+// driver translates such stages again for every specialization.
+inline constexpr char FROZEN_SPEC_CONSTANTS_MARKER[] = "// Specialization constants frozen to their defaults.\n";
 
 } // namespace spirv_preprocess

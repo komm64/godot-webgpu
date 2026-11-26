@@ -3893,13 +3893,6 @@ bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<Rend
 			break;
 		}
 
-		// Store raw SPIR-V for potential re-conversion with specialization constants.
-		// Stages without any (such as the ubershader's, which reads them from push
-		// constants) are never translated again.
-		if (spirv_preprocess::has_spec_constants(spv_bytes)) {
-			shader->stage_spirv[(int)s.shader_stage] = spv_bytes;
-		}
-
 		// emdawnwebgpu does NOT support WGPUShaderSourceSPIRV — it's a thin wrapper
 		// around the browser's WebGPU API which only accepts WGSL.
 		// We convert SPIR-V → WGSL at runtime using Tint (C++, linked directly).
@@ -3910,6 +3903,12 @@ bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<Rend
 		char *wgsl_str = baked_wgsl.length() > 0 ? _malloc_wgsl(baked_wgsl) : _spv_to_wgsl_cached(spv_bytes.ptr(), (int)spv_bytes.size());
 		if (baked_wgsl.length() > 0) {
 			_spv_to_wgsl_baked_hits++;
+		}
+
+		// Stages translated with frozen specialization constants are translated
+		// again for each specialization; the others take them as WGSL overrides.
+		if (wgsl_str != nullptr && strncmp(wgsl_str, spirv_preprocess::FROZEN_SPEC_CONSTANTS_MARKER, strlen(spirv_preprocess::FROZEN_SPEC_CONSTANTS_MARKER)) == 0) {
+			shader->stage_spirv[(int)s.shader_stage] = spv_bytes;
 		}
 
 		if (wgsl_str == nullptr) {

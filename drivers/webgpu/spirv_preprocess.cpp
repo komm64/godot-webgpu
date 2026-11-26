@@ -3222,7 +3222,7 @@ bool spec_constants_fit_overrides(const Vector<uint8_t> &p_bytes) {
 Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes, bool p_freeze_spec_constants) {
 	Vector<uint8_t> spv = p_bytes;
 	spv = inline_opaque_functions(spv);
-	if (p_freeze_spec_constants || !spec_constants_fit_overrides(spv)) {
+	if (p_freeze_spec_constants) {
 		spv = freeze_spec_constant_ops(spv);
 	}
 	spv = rewrite_copy_logical(spv);

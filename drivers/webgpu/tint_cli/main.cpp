@@ -54,10 +54,17 @@ static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes
 	spv.resize((int64_t)p_spv_bytes.size());
 	memcpy(spv.ptrw(), p_spv_bytes.data(), p_spv_bytes.size());
 
-	std::string wgsl = convert_prepared(spirv_preprocess::prepare_for_tint(spv), r_error);
-	if (wgsl.empty()) {
-		// Same fallback as the driver: bake in the specialization constants' defaults.
+	// Same as the driver (spirv_to_wgsl.cpp): keep specialization constants as
+	// overrides when Tint accepts them, otherwise freeze and mark the WGSL.
+	const bool has_spec_constants = spirv_preprocess::has_spec_constants(spv);
+	bool freeze = has_spec_constants && !spirv_preprocess::spec_constants_fit_overrides(spv);
+	std::string wgsl = convert_prepared(spirv_preprocess::prepare_for_tint(spv, freeze), r_error);
+	if (wgsl.empty() && !freeze && has_spec_constants) {
+		freeze = true;
 		wgsl = convert_prepared(spirv_preprocess::prepare_for_tint(spv, true), r_error);
+	}
+	if (!wgsl.empty() && freeze) {
+		wgsl = spirv_preprocess::FROZEN_SPEC_CONSTANTS_MARKER + wgsl;
 	}
 	return wgsl;
 }

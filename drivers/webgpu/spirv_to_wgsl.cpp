@@ -54,9 +54,11 @@ char *webgpu_spirv_to_wgsl(const uint8_t *p_spv, int p_size, String *r_error) {
 
 	// Keep specialization constants as overrides when Tint accepts them;
 	// otherwise translate again with their default values baked in.
+	const bool has_spec_constants = spirv_preprocess::has_spec_constants(input);
+	bool freeze = has_spec_constants && !spirv_preprocess::spec_constants_fit_overrides(input);
 	char *out = nullptr;
 	char *error_msg = nullptr;
-	for (int freeze = 0; freeze < 2 && out == nullptr; freeze++) {
+	while (true) {
 		const Vector<uint8_t> spv = spirv_preprocess::prepare_for_tint(input, freeze);
 		std::vector<uint32_t> words(spv.size() / 4);
 		memcpy(words.data(), spv.ptr(), spv.size());
@@ -65,6 +67,19 @@ char *webgpu_spirv_to_wgsl(const uint8_t *p_spv, int p_size, String *r_error) {
 			error_msg = nullptr;
 		}
 		out = tint_wrapper_spirv_to_wgsl(words.data(), words.size(), &error_msg);
+		if (out != nullptr || freeze || !has_spec_constants) {
+			break;
+		}
+		freeze = true;
+	}
+	if (out != nullptr && freeze) {
+		const size_t marker_len = strlen(spirv_preprocess::FROZEN_SPEC_CONSTANTS_MARKER);
+		const size_t len = strlen(out);
+		char *marked = (char *)malloc(marker_len + len + 1);
+		memcpy(marked, spirv_preprocess::FROZEN_SPEC_CONSTANTS_MARKER, marker_len);
+		memcpy(marked + marker_len, out, len + 1);
+		free(out);
+		out = marked;
 	}
 	if (out == nullptr && r_error) {
 		*r_error = error_msg ? String::utf8(error_msg) : String("unknown error");
