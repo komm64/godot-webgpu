@@ -147,15 +147,9 @@ public:
 		print_line("HASH:", p_key_hash, "SOURCE:", source_name);
 #endif
 
-		// Browser WebGPU handles are scoped to the main JavaScript realm, so
-		// Web builds must create pipelines on the rendering thread. Other
-		// platforms keep using background compilation.
-#ifdef WEB_ENABLED
-		(creation_object->*creation_function)(p_key);
-#else
+		// Queue a background compilation task.
 		WorkerThreadPool::TaskID task_id = WorkerThreadPool::get_singleton()->add_template_task(creation_object, creation_function, p_key, p_high_priority, "PipelineCompilation");
 		compilation_tasks.insert(p_key_hash, task_id);
-#endif
 	}
 
 	void wait_for_pipeline(uint32_t p_key_hash) {

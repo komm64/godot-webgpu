@@ -267,6 +267,12 @@ def configure(env: "SConsEnvironment"):
         env.Append(LINKFLAGS=["-sGL_ENABLE_GET_PROC_ADDRESS=0"])
 
     if env["webgpu"]:
+        if env["threads"]:
+            # The GPUDevice lives on the main JS thread, and RenderingDevice
+            # creates pipelines and shaders in WorkerThreadPool tasks, which
+            # run on the calling thread only when there are no threads.
+            print_error('"webgpu=yes" requires "threads=no".')
+            sys.exit(255)
         env.AppendUnique(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
         # Emscripten 4.0.10+ uses the emdawnwebgpu port; -sUSE_WEBGPU=1 was removed in 5.0.
         # Pass --use-port=emdawnwebgpu to both CCFLAGS (for headers) and LINKFLAGS (for JS glue).
