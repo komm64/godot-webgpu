@@ -48,17 +48,24 @@ char *webgpu_spirv_to_wgsl(const uint8_t *p_spv, int p_size, String *r_error) {
 		return nullptr;
 	}
 
-	Vector<uint8_t> spv;
-	spv.resize(p_size);
-	memcpy(spv.ptrw(), p_spv, p_size);
+	Vector<uint8_t> input;
+	input.resize(p_size);
+	memcpy(input.ptrw(), p_spv, p_size);
 
-	spv = spirv_preprocess::prepare_for_tint(spv);
-
-	std::vector<uint32_t> words(spv.size() / 4);
-	memcpy(words.data(), spv.ptr(), spv.size());
-
+	// Keep specialization constants as overrides when Tint accepts them;
+	// otherwise translate again with their default values baked in.
+	char *out = nullptr;
 	char *error_msg = nullptr;
-	char *out = tint_wrapper_spirv_to_wgsl(words.data(), words.size(), &error_msg);
+	for (int freeze = 0; freeze < 2 && out == nullptr; freeze++) {
+		const Vector<uint8_t> spv = spirv_preprocess::prepare_for_tint(input, freeze);
+		std::vector<uint32_t> words(spv.size() / 4);
+		memcpy(words.data(), spv.ptr(), spv.size());
+		if (error_msg) {
+			free(error_msg);
+			error_msg = nullptr;
+		}
+		out = tint_wrapper_spirv_to_wgsl(words.data(), words.size(), &error_msg);
+	}
 	if (out == nullptr && r_error) {
 		*r_error = error_msg ? String::utf8(error_msg) : String("unknown error");
 	}

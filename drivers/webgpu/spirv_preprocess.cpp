@@ -3156,12 +3156,52 @@ Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes) {
 	return out;
 }
 
+// ---- spec_constants_fit_overrides ----
+
+bool spec_constants_fit_overrides(const Vector<uint8_t> &p_bytes) {
+	const uint8_t *data = p_bytes.ptr();
+	const int64_t len = p_bytes.size();
+	const uint32_t total_words = (uint32_t)(len / 4);
+
+	HashSet<uint32_t> scalar_types;
+	uint32_t pos = 5;
+	while (pos < total_words) {
+		const uint32_t w0 = read_word(data, len, pos);
+		const uint32_t wc = w0 >> 16;
+		const uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			return false;
+		}
+		switch (op) {
+			case OP_TYPE_BOOL:
+			case OP_TYPE_INT:
+			case OP_TYPE_FLOAT:
+				scalar_types.insert(read_word(data, len, pos + 1));
+				break;
+			case OP_SPEC_CONSTANT_COMPOSITE:
+				return false;
+			case OP_SPEC_CONSTANT_OP:
+				// WGSL overrides are scalars; Tint stops on vector results.
+				if (!scalar_types.has(read_word(data, len, pos + 1))) {
+					return false;
+				}
+				break;
+			default:
+				break;
+		}
+		pos += wc;
+	}
+	return true;
+}
+
 // ---- prepare_for_tint ----
 
-Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes) {
+Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes, bool p_freeze_spec_constants) {
 	Vector<uint8_t> spv = p_bytes;
 	spv = inline_opaque_functions(spv);
-	spv = freeze_spec_constant_ops(spv);
+	if (p_freeze_spec_constants || !spec_constants_fit_overrides(spv)) {
+		spv = freeze_spec_constant_ops(spv);
+	}
 	spv = rewrite_copy_logical(spv);
 	spv = rewrite_terminate_invocation(spv);
 	spv = rewrite_is_inf_nan(spv);

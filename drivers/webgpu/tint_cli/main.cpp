@@ -39,6 +39,8 @@ static std::vector<uint8_t> read_file(const char *p_path) {
 	return buf;
 }
 
+static std::string convert_prepared(Vector<uint8_t> spv, std::string &r_error);
+
 // Run the full SPIR-V preprocessing pipeline + Tint conversion.
 // Returns WGSL string on success, empty string on failure (error written to r_error).
 static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes, std::string &r_error) {
@@ -52,8 +54,16 @@ static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes
 	spv.resize((int64_t)p_spv_bytes.size());
 	memcpy(spv.ptrw(), p_spv_bytes.data(), p_spv_bytes.size());
 
-	spv = spirv_preprocess::prepare_for_tint(spv);
+	std::string wgsl = convert_prepared(spirv_preprocess::prepare_for_tint(spv), r_error);
+	if (wgsl.empty()) {
+		// Same fallback as the driver: bake in the specialization constants' defaults.
+		wgsl = convert_prepared(spirv_preprocess::prepare_for_tint(spv, true), r_error);
+	}
+	return wgsl;
+}
 
+// Tint conversion of preprocessed SPIR-V.
+static std::string convert_prepared(Vector<uint8_t> spv, std::string &r_error) {
 	// Ensure SPIR-V version is at least 1.3 (0x00010300). The preprocessing
 	// passes produce constructs (StorageBuffer storage class) that require 1.3,
 	// but input SPIR-V may declare an older version in its header.

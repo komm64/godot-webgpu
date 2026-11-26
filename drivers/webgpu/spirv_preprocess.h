@@ -196,8 +196,15 @@ Vector<uint8_t> strip_writeonly_storage_decoration(const Vector<uint8_t> &p_byte
 // only ever needs to react to, the final preprocessed form.
 Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes);
 
+// True when Tint can turn every specialization constant into a WGSL override:
+// it maps scalar OpSpecConstant* and OpSpecConstantOp, but not composites.
+bool spec_constants_fit_overrides(const Vector<uint8_t> &p_bytes);
+
 // Run every pass above, in order, to turn glslang SPIR-V into input Tint
 // accepts. The driver and the tint_cli precompile tool both use this.
-Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes);
+// Specialization constants are kept as WGSL overrides, so pipelines can set
+// them without translating the shader again, unless p_freeze_spec_constants
+// is set or they can't be overrides; then their default values are baked in.
+Vector<uint8_t> prepare_for_tint(const Vector<uint8_t> &p_bytes, bool p_freeze_spec_constants = false);
 
 } // namespace spirv_preprocess
