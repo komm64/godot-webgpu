@@ -257,13 +257,18 @@ async function main() {
   let sweep = { gpu: [], frames: 0, firstFrame: null };
   // Last once-a-second driver counter line ("[PERF] fps=..."), if any.
   let perfLine = null;
+  // Every once-a-second pipeline/shader creation stats line ("[PERF] create...").
+  const createLines = [];
 
   try {
     cdp = await connectCdp(target.webSocketDebuggerUrl);
 
     cdp.on('Runtime.consoleAPICalled', (params) => {
       const first = params.args && params.args[0] && params.args[0].value;
-      if (typeof first === 'string' && first.startsWith('[PERF] fps=')) perfLine = first;
+      if (typeof first === 'string') {
+        if (first.startsWith('[PERF] fps=')) perfLine = first;
+        else if (first.startsWith('[PERF] create')) createLines.push(first);
+      }
       if (params.type === 'error' || params.type === 'assert') {
         const text = (params.args || []).map(formatRemoteArg).join(' ').trim();
         if (text) jsErrors.push(text.slice(0, 300));
@@ -366,6 +371,7 @@ async function main() {
     first_errors: firstErrors,
     shot: shotWritten,
     perf: perfLine,
+    create: createLines,
   };
   process.stdout.write(`${JSON.stringify(output)}\n`);
 }

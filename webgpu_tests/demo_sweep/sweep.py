@@ -129,7 +129,7 @@ def patch_project_godot(project_file: Path) -> None:
     project_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_export_presets(presets_file: Path, template_abs: str) -> None:
+def write_export_presets(presets_file: Path, template_abs: str, bake: bool = False) -> None:
     escaped = template_abs.replace('"', '\\"')
     content = (
         "[preset.0]\n\n"
@@ -144,6 +144,8 @@ def write_export_presets(presets_file: Path, template_abs: str) -> None:
         "vram_texture_compression/for_desktop=true\n"
         "html/export_icon=false\n"
     )
+    if bake:
+        content += "shader_baker/enabled=true\n"
     presets_file.write_text(content, encoding="utf-8")
 
 
@@ -191,6 +193,7 @@ def export_demo(
     godot_abs: str,
     template_abs: str,
     out_dir: Path,
+    bake: bool = False,
 ) -> dict:
     work_dir = out_dir / "work" / name
     web_dir = out_dir / "web" / name
@@ -203,7 +206,7 @@ def export_demo(
 
     shutil.copytree(src_dir, work_dir, ignore=shutil.ignore_patterns(".godot", ".git"))
     patch_project_godot(work_dir / "project.godot")
-    write_export_presets(work_dir / "export_presets.cfg", template_abs)
+    write_export_presets(work_dir / "export_presets.cfg", template_abs, bake=bake)
     web_dir.mkdir(parents=True, exist_ok=True)
 
     work_abs = win_abs_path(work_dir)
@@ -214,9 +217,28 @@ def export_demo(
     all_logs.extend(import_logs)
 
     if rc == 0:
-        rc, export_logs = run_godot_step(
-            [godot_abs, "--headless", "--path", work_abs, "--export-release", "Web", index_abs]
-        )
+        if bake:
+            export_cmd = [
+                godot_abs,
+                "--rendering-method",
+                "mobile",
+                "--path",
+                work_abs,
+                "--export-release",
+                "Web",
+                index_abs,
+            ]
+        else:
+            export_cmd = [
+                godot_abs,
+                "--headless",
+                "--path",
+                work_abs,
+                "--export-release",
+                "Web",
+                index_abs,
+            ]
+        rc, export_logs = run_godot_step(export_cmd)
         all_logs.extend(export_logs)
 
     if rc == 0 and not index_html.is_file():
@@ -381,6 +403,8 @@ def run_check(
             "js_errors": 1,
             "first_errors": [f"check.mjs timed out after {timeout_sec}s"],
             "shot": None,
+            "perf": None,
+            "create": [],
         }
 
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
@@ -393,6 +417,8 @@ def run_check(
             "js_errors": 1,
             "first_errors": [err],
             "shot": None,
+            "perf": None,
+            "create": [],
         }
 
     try:
@@ -405,6 +431,8 @@ def run_check(
             "js_errors": 1,
             "first_errors": [f"Invalid JSON from check.mjs: {exc}"],
             "shot": None,
+            "perf": None,
+            "create": [],
         }
 
     shot_rel: str | None = None
@@ -421,6 +449,7 @@ def run_check(
         "first_errors": list(data.get("first_errors") or [])[:5],
         "shot": shot_rel,
         "perf": data.get("perf"),
+        "create": list(data.get("create") or []),
     }
 
 
@@ -477,6 +506,17 @@ def md_escape(text: str) -> str:
     return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
+def first_create_at_ms(item: dict) -> str:
+    create = item.get("create")
+    if not isinstance(create, list) or not create:
+        return "-"
+    first = create[0]
+    if not isinstance(first, str):
+        return "-"
+    match = re.search(r"\bat=(\d+(?:\.\d+)?)", first)
+    return match.group(1) if match else "-"
+
+
 def write_summary_md(out_dir: Path, results: list[dict], diffs: dict[str, dict] | None) -> None:
     def sort_key(item: dict) -> tuple:
         regressed = bool(diffs and diffs.get(item["name"], {}).get("status") == "regressed")
@@ -508,14 +548,14 @@ def write_summary_md(out_dir: Path, results: list[dict], diffs: dict[str, dict] 
 
     if diffs is not None:
         lines.append(
-            "| Demo | Compare | Regressions | Export | Frames | First Frame (ms) | GPU Errors | JS Errors | Shot | First Errors |"
+            "| Demo | Compare | Regressions | Export | Frames | First Frame (ms) | First Create (ms) | GPU Errors | JS Errors | Shot | First Errors |"
         )
-        lines.append("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
+        lines.append("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
     else:
         lines.append(
-            "| Demo | Export | Frames | First Frame (ms) | GPU Errors | JS Errors | Shot | First Errors |"
+            "| Demo | Export | Frames | First Frame (ms) | First Create (ms) | GPU Errors | JS Errors | Shot | First Errors |"
         )
-        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
 
     for item in ordered:
         if item.get("skipped"):
@@ -523,6 +563,7 @@ def write_summary_md(out_dir: Path, results: list[dict], diffs: dict[str, dict] 
         else:
             exp = "ok" if item.get("export_ok") else f"fail ({item.get('export_rc', '?')})"
         ff = "-" if item.get("first_frame_ms") is None else str(item["first_frame_ms"])
+        fc = first_create_at_ms(item)
         shot = f"[png]({item['shot']})" if item.get("shot") else "-"
         errs = "; ".join(md_escape(e) for e in (item.get("first_errors") or [])[:5]) or "-"
         if item.get("skipped"):
@@ -532,11 +573,11 @@ def write_summary_md(out_dir: Path, results: list[dict], diffs: dict[str, dict] 
             status = diff["status"].upper()
             reasons = md_escape(", ".join(diff["reasons"])) if diff["reasons"] else "-"
             lines.append(
-                f"| {md_escape(item['name'])} | {status} | {reasons} | {exp} | {item['frames']} | {ff} | {item['gpu_errors']} | {item['js_errors']} | {shot} | {errs} |"
+                f"| {md_escape(item['name'])} | {status} | {reasons} | {exp} | {item['frames']} | {ff} | {fc} | {item['gpu_errors']} | {item['js_errors']} | {shot} | {errs} |"
             )
         else:
             lines.append(
-                f"| {md_escape(item['name'])} | {exp} | {item['frames']} | {ff} | {item['gpu_errors']} | {item['js_errors']} | {shot} | {errs} |"
+                f"| {md_escape(item['name'])} | {exp} | {item['frames']} | {ff} | {fc} | {item['gpu_errors']} | {item['js_errors']} | {shot} | {errs} |"
             )
 
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -568,6 +609,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Longest wait for a demo that has not drawn a frame yet (default: 120).",
     )
     parser.add_argument("--jobs", type=int, default=1, help="Parallel export jobs (default: 1).")
+    parser.add_argument(
+        "--bake",
+        action="store_true",
+        help=(
+            "Enable shader_baker/enabled=true and export with --rendering-method mobile (no --headless). "
+            "Requires an editor built from the same commit as the template (this fork's editor, not stock Godot)."
+        ),
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Visits per exported demo in the same browser profile to measure warm caches (default: 1).",
+    )
     parser.add_argument("--compare", default=None, help="Previous results.json for regression comparison.")
     return parser
 
@@ -609,14 +664,19 @@ def main(argv: list[str] | None = None) -> int:
 
     export_results: dict[str, dict] = {}
     jobs = max(1, args.jobs)
+    repeat = max(1, args.repeat)
     if jobs == 1:
         for name, rel, src_dir in demos_to_export:
             print(f"[export] {rel} -> {name}", flush=True)
-            export_results[name] = export_demo(name, src_dir, godot_abs, template_abs, out_dir)
+            export_results[name] = export_demo(
+                name, src_dir, godot_abs, template_abs, out_dir, bake=args.bake
+            )
     else:
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             futs = {
-                pool.submit(export_demo, name, src_dir, godot_abs, template_abs, out_dir): (name, rel)
+                pool.submit(
+                    export_demo, name, src_dir, godot_abs, template_abs, out_dir, args.bake
+                ): (name, rel)
                 for name, rel, src_dir in demos_to_export
             }
             for fut in as_completed(futs):
@@ -647,25 +707,28 @@ def main(argv: list[str] | None = None) -> int:
                 results.append(exp)
                 continue
             url = f"http://127.0.0.1:{args.port}/{name}/index.html"
-            shot_path = shots_dir / f"{name}.png"
-            print(f"[run] {name} ({args.seconds}s)", flush=True)
-            check = run_check(check_mjs, args.cdp_port, url, args.seconds, args.max_seconds, shot_path, out_dir)
-            results.append(
-                {
-                    "name": name,
-                    "export_ok": True,
-                    "export_rc": 0,
-                    "first_frame_ms": check["first_frame_ms"],
-                    "frames": check["frames"],
-                    "gpu_errors": check["gpu_errors"],
-                    "js_errors": check["js_errors"],
-                    "env_errors": check.get("env_errors", 0),
-                    "warnings": check.get("warnings", 0),
-                    "first_errors": check["first_errors"],
-                    "shot": check["shot"],
-                    "perf": check.get("perf"),
-                }
-            )
+            for visit in range(repeat):
+                entry_name = name if repeat == 1 else f"{name}#{visit}"
+                shot_path = shots_dir / (f"{name}.png" if repeat == 1 else f"{name}_{visit}.png")
+                print(f"[run] {entry_name} ({args.seconds}s)", flush=True)
+                check = run_check(check_mjs, args.cdp_port, url, args.seconds, args.max_seconds, shot_path, out_dir)
+                results.append(
+                    {
+                        "name": entry_name,
+                        "export_ok": True,
+                        "export_rc": 0,
+                        "first_frame_ms": check["first_frame_ms"],
+                        "frames": check["frames"],
+                        "gpu_errors": check["gpu_errors"],
+                        "js_errors": check["js_errors"],
+                        "env_errors": check.get("env_errors", 0),
+                        "warnings": check.get("warnings", 0),
+                        "first_errors": check["first_errors"],
+                        "shot": check["shot"],
+                        "perf": check.get("perf"),
+                        "create": check.get("create", []),
+                    }
+                )
     except KeyboardInterrupt:
         print("\nInterrupted; cleaning up Chrome and HTTP server...", file=sys.stderr)
         return 130

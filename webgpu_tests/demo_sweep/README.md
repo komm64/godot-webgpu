@@ -17,12 +17,16 @@ python webgpu_tests/demo_sweep/sweep.py \
   [--seconds 15] \
   [--max-seconds 120] \
   [--jobs 1] \
+  [--bake] \
+  [--repeat 1] \
   [--compare <old-results.json>]
 ```
 
 Key options:
 - `--filter <substring>`: Run only demos whose relative path contains `<substring>`.
 - `--jobs <N>`: Export up to `N` demos in parallel (default `1`).
+- `--bake`: Enable `shader_baker/enabled=true` in the Web export preset and export with `--rendering-method mobile` (without `--headless`, since shader baking needs a rendering device). Requires an editor built from the same commit as the template (this fork's editor, not stock Godot).
+- `--repeat <N>`: Visit each exported demo `N` times in the same browser profile to measure warm caches (default `1`). When `N > 1`, entries are named `<name>#<visit>` (`0..N-1`) and screenshots `shots/<name>_<visit>.png`.
 - `--seconds <N>`: Run time per demo after its first frame, before capturing metrics and screenshot (default `15`).
 - `--max-seconds <N>`: Longest wait for a demo that is still loading or compiling shaders and has not drawn a frame (default `120`). Pipeline creation is synchronous, so a demo with many materials can take about a minute to draw on a low-end GPU.
 - `--chrome <path>`: Chrome executable (Windows default: `C:/Program Files/Google/Chrome/Application/chrome.exe`).
@@ -32,9 +36,9 @@ Key options:
 Written under `--out`:
 - `work/<name>/`: Temporary patched copy of each demo (`project.godot` + `export_presets.cfg`).
 - `web/<name>/index.html`: Exported WebGPU build with `"renderingDriver":"webgpu"` patched into `GODOT_CONFIG`.
-- `shots/<name>.png`: Screenshot captured after `--seconds`.
-- `results.json`: Per-demo JSON records (`name`, `export_ok`, `export_rc`, `first_frame_ms`, `frames`, `gpu_errors`, `js_errors`, `env_errors`, `warnings`, `first_errors`, `shot`, plus `export_log` on export failure).
-- `summary.md`: Markdown summary table sorted with failures (and regressions) first.
+- `shots/<name>.png`: Screenshot captured after `--seconds` (`shots/<name>_<visit>.png` when `--repeat > 1`).
+- `results.json`: Per-demo JSON records (`name`, `export_ok`, `export_rc`, `first_frame_ms`, `frames`, `gpu_errors`, `js_errors`, `env_errors`, `warnings`, `first_errors`, `shot`, `perf`, `create`, plus `export_log` on export failure). `create` holds every `[PERF] create` console line emitted by the driver.
+- `summary.md`: Markdown summary table sorted with failures (and regressions) first, including `First Create (ms)` (`at=<ms>` from the first `create` line, or `-` when absent).
 
 ## Error counts
 
