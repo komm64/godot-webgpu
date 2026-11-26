@@ -57,18 +57,27 @@ private:
 	HashMap<uint32_t, WorkerThreadPool::TaskID> compilation_tasks;
 	Mutex local_mutex;
 
-	bool _add_new_pipelines_to_map() {
+	// Pipelines the driver is still finishing (see RenderingDevice::render_pipeline_is_ready())
+	// stay queued, unless p_wait_hash names one that must be finished now.
+	bool _add_new_pipelines_to_map(const uint32_t *p_wait_hash = nullptr) {
 		thread_local Vector<uint32_t> hashes_added;
 		hashes_added.clear();
 
 		{
 			MutexLock lock(compiled_queue_mutex);
-			for (const Pair<uint32_t, RID> &pair : compiled_queue) {
+			uint32_t pending = 0;
+			for (uint32_t i = 0; i < compiled_queue.size(); i++) {
+				const Pair<uint32_t, RID> pair = compiled_queue[i];
+				const bool wait = p_wait_hash != nullptr && *p_wait_hash == pair.first;
+				if (pair.second.is_valid() && !RD::get_singleton()->render_pipeline_is_ready(pair.second, wait)) {
+					compiled_queue[pending++] = pair;
+					continue;
+				}
 				hash_map[pair.first] = pair.second;
 				hashes_added.push_back(pair.first);
 			}
 
-			compiled_queue.clear();
+			compiled_queue.resize(pending);
 		}
 
 		{
@@ -97,6 +106,14 @@ private:
 		for (WorkerThreadPool::TaskID task_id : tasks_to_wait) {
 			WorkerThreadPool::get_singleton()->wait_for_task_completion(task_id);
 		}
+	}
+
+	// Creates a pipeline nobody waits for yet. Drivers that can't compile on
+	// worker threads may finish it later, like a background task.
+	void _create_deferred(Key p_key) {
+		RD::get_singleton()->render_pipeline_set_deferred_creation(true);
+		(creation_object->*creation_function)(p_key);
+		RD::get_singleton()->render_pipeline_set_deferred_creation(false);
 	}
 
 public:
@@ -148,7 +165,12 @@ public:
 #endif
 
 		// Queue a background compilation task.
-		WorkerThreadPool::TaskID task_id = WorkerThreadPool::get_singleton()->add_template_task(creation_object, creation_function, p_key, p_high_priority, "PipelineCompilation");
+		WorkerThreadPool::TaskID task_id;
+		if (p_high_priority) {
+			task_id = WorkerThreadPool::get_singleton()->add_template_task(creation_object, creation_function, p_key, p_high_priority, "PipelineCompilation");
+		} else {
+			task_id = WorkerThreadPool::get_singleton()->add_template_task(this, &PipelineHashMapRD::_create_deferred, p_key, p_high_priority, "PipelineCompilation");
+		}
 		compilation_tasks.insert(p_key_hash, task_id);
 	}
 
@@ -192,7 +214,7 @@ public:
 
 			if (p_wait_for_compilation) {
 				wait_for_pipeline(p_key_hash);
-				_add_new_pipelines_to_map();
+				_add_new_pipelines_to_map(&p_key_hash);
 
 				e = hash_map.find(p_key_hash);
 				if (e != nullptr) {
@@ -214,6 +236,15 @@ public:
 	void clear_pipelines() {
 		_wait_for_all_pipelines();
 		_add_new_pipelines_to_map();
+
+		{
+			// Pipelines the driver hasn't finished yet.
+			MutexLock lock(compiled_queue_mutex);
+			for (const Pair<uint32_t, RID> &pair : compiled_queue) {
+				RD::get_singleton()->free_rid(pair.second);
+			}
+			compiled_queue.clear();
+		}
 
 		for (KeyValue<uint32_t, RID> entry : hash_map) {
 			RD::get_singleton()->free_rid(entry.value);

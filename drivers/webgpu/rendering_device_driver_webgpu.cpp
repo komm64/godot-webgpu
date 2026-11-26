@@ -221,6 +221,7 @@ static uint32_t _spv_to_wgsl_cache_misses = 0;
 struct WGCreationStats {
 	uint32_t shaders_requested = 0, shaders = 0, spec_modules = 0, render_pipelines = 0, compute_pipelines = 0;
 	double shader_ms = 0, tint_ms = 0, spec_ms = 0, render_pipeline_ms = 0, compute_pipeline_ms = 0;
+	uint32_t render_pipelines_deferred = 0, render_pipelines_finished_now = 0;
 };
 static WGCreationStats _creation_stats;
 
@@ -7320,9 +7321,86 @@ void RenderingDeviceDriverWebGPU::command_copy_texture_to_buffer(CommandBufferID
 // PIPELINE
 // =============================================================================
 
+void RenderingDeviceDriverWebGPU::pipeline_set_deferred_creation(bool p_enable) {
+	pipeline_deferred_creation = p_enable;
+}
+
+void RenderingDeviceDriverWebGPU::_render_pipeline_create_async(WGPipelineWrapper *p_pw, const WGPURenderPipelineDescriptor &p_desc, WGPURenderPipeline *r_handle) {
+	WGPUCreateRenderPipelineAsyncCallbackInfo cb = {};
+	cb.mode = WGPUCallbackMode_AllowSpontaneous;
+	cb.callback = _render_pipeline_created;
+	cb.userdata1 = p_pw;
+	cb.userdata2 = r_handle;
+	p_pw->async_pending++;
+	wgpuDeviceCreateRenderPipelineAsync(device, &p_desc, cb);
+}
+
+void RenderingDeviceDriverWebGPU::_render_pipeline_created(WGPUCreatePipelineAsyncStatus p_status, WGPURenderPipeline p_pipeline, WGPUStringView p_message, void *p_userdata1, void *p_userdata2) {
+	WGPipelineWrapper *pw = (WGPipelineWrapper *)p_userdata1;
+	pw->async_pending--;
+	if (pw->async_discard) {
+		if (p_pipeline) {
+			wgpuRenderPipelineRelease(p_pipeline);
+		}
+	} else {
+		*(WGPURenderPipeline *)p_userdata2 = p_pipeline;
+		if (p_status != WGPUCreatePipelineAsyncStatus_Success) {
+			ERR_PRINT("WebGPU: Failed to create render pipeline: " + String::utf8(p_message.data, p_message.length == WGPU_STRLEN ? -1 : (int)p_message.length));
+		}
+	}
+	if (pw->async_pending == 0 && pw->create_args) {
+		memdelete(pw->create_args);
+		pw->create_args = nullptr;
+	}
+	if (pw->async_pending == 0 && pw->freed) {
+		delete pw;
+	}
+}
+
+void RenderingDeviceDriverWebGPU::_render_pipeline_finish_now(WGPipelineWrapper *p_pw) {
+	// The browser can't be waited on, so create the pipeline again synchronously
+	// and drop the asynchronous results when they arrive.
+	WGRenderPipelineCreateArgs *args = p_pw->create_args;
+	ERR_FAIL_NULL(args);
+	const bool deferred = pipeline_deferred_creation;
+	pipeline_deferred_creation = false;
+	PipelineID sync_id = render_pipeline_create(args->shader, args->vertex_format, args->render_primitive, args->rasterization_state, args->multisample_state, args->depth_stencil_state, args->blend_state, args->color_attachments, args->dynamic_state, args->render_pass, args->render_subpass, args->specialization_constants);
+	pipeline_deferred_creation = deferred;
+
+	p_pw->async_discard = true;
+	memdelete(args);
+	p_pw->create_args = nullptr;
+	_creation_stats.render_pipelines_finished_now++;
+
+	WGPipelineWrapper *sync_pw = (WGPipelineWrapper *)(sync_id.id);
+	ERR_FAIL_NULL(sync_pw);
+	p_pw->render_handle = sync_pw->render_handle;
+	p_pw->render_handle_u16 = sync_pw->render_handle_u16;
+	for (int i = 0; i < 6; i++) {
+		if (sync_pw->specialized_modules[i]) {
+			wgpuShaderModuleRelease(sync_pw->specialized_modules[i]);
+		}
+	}
+	delete sync_pw;
+}
+
+bool RenderingDeviceDriverWebGPU::pipeline_is_ready(PipelineID p_pipeline, bool p_wait) {
+	WGPipelineWrapper *pw = (WGPipelineWrapper *)(p_pipeline.id);
+	ERR_FAIL_NULL_V(pw, true);
+	if (pw->is_ready()) {
+		return true;
+	}
+	if (!p_wait) {
+		return false;
+	}
+	_render_pipeline_finish_now(pw);
+	return true;
+}
+
 void RenderingDeviceDriverWebGPU::pipeline_free(PipelineID p_pipeline) {
 	WGPipelineWrapper *pw = (WGPipelineWrapper *)(p_pipeline.id);
 	ERR_FAIL_NULL(pw);
+	pw->async_discard = true;
 	if (pw->type == WGPipelineWrapper::RENDER && pw->render_handle) {
 		wgpuRenderPipelineRelease(pw->render_handle);
 		if (pw->render_handle_u16) {
@@ -7336,6 +7414,14 @@ void RenderingDeviceDriverWebGPU::pipeline_free(PipelineID p_pipeline) {
 		if (pw->specialized_modules[i]) {
 			wgpuShaderModuleRelease(pw->specialized_modules[i]);
 		}
+	}
+	if (pw->async_pending > 0) {
+		// The wrapper is the callbacks' userdata; the last one deletes it.
+		pw->freed = true;
+		return;
+	}
+	if (pw->create_args) {
+		memdelete(pw->create_args);
 	}
 	delete pw;
 }
@@ -8186,6 +8272,9 @@ void RenderingDeviceDriverWebGPU::command_bind_render_pipeline(CommandBufferID p
 	ERR_FAIL_NULL(cmd);
 	ERR_FAIL_NULL(pw);
 	ERR_FAIL_COND(!cmd->render_encoder);
+	if (!pw->is_ready()) {
+		_render_pipeline_finish_now(pw);
+	}
 
 	cmd->render_state.depth_written |= pw->depth_write;
 	if (cmd->render_state.current_pipeline == pw) {
@@ -9222,16 +9311,41 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 	CharString _pipeline_label_cs = _pipeline_label_str.utf8();
 	desc.label = { _pipeline_label_cs.get_data(), WGPU_STRLEN };
 
-	WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &desc);
-	if (!pipeline) {
-		if (specialized_vertex) wgpuShaderModuleRelease(specialized_vertex);
-		if (specialized_fragment) wgpuShaderModuleRelease(specialized_fragment);
-		ERR_FAIL_V_MSG(PipelineID(), "WebGPU: Failed to create render pipeline.");
+	WGPipelineWrapper *pw = new WGPipelineWrapper();
+	if (pipeline_deferred_creation) {
+		// Let the browser compile it in parallel with the others; the pipeline
+		// is published once pipeline_is_ready() reports it.
+		WGRenderPipelineCreateArgs *args = memnew(WGRenderPipelineCreateArgs);
+		args->shader = p_shader;
+		args->vertex_format = p_vertex_format;
+		args->render_primitive = p_render_primitive;
+		args->rasterization_state = p_rasterization_state;
+		args->multisample_state = p_multisample_state;
+		args->depth_stencil_state = p_depth_stencil_state;
+		args->blend_state = p_blend_state;
+		for (uint32_t i = 0; i < p_color_attachments.size(); i++) {
+			args->color_attachments.push_back(p_color_attachments[i]);
+		}
+		args->dynamic_state = p_dynamic_state;
+		args->render_pass = p_render_pass;
+		args->render_subpass = p_render_subpass;
+		for (uint32_t i = 0; i < p_specialization_constants.size(); i++) {
+			args->specialization_constants.push_back(p_specialization_constants[i]);
+		}
+		pw->create_args = args;
+		_creation_stats.render_pipelines_deferred++;
+		_render_pipeline_create_async(pw, desc, &pw->render_handle);
+	} else {
+		pw->render_handle = wgpuDeviceCreateRenderPipeline(device, &desc);
+		if (!pw->render_handle) {
+			delete pw;
+			if (specialized_vertex) wgpuShaderModuleRelease(specialized_vertex);
+			if (specialized_fragment) wgpuShaderModuleRelease(specialized_fragment);
+			ERR_FAIL_V_MSG(PipelineID(), "WebGPU: Failed to create render pipeline.");
+		}
 	}
 
-	WGPipelineWrapper *pw = new WGPipelineWrapper();
 	pw->type = WGPipelineWrapper::RENDER;
-	pw->render_handle = pipeline;
 	pw->shader = shader;
 	pw->specialized_modules[SHADER_STAGE_VERTEX] = specialized_vertex;
 	pw->specialized_modules[SHADER_STAGE_FRAGMENT] = specialized_fragment;
@@ -9242,9 +9356,13 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 		// Create a Uint16 variant — WebGPU bakes stripIndexFormat into the pipeline,
 		// but Godot only knows the index format at bind time.
 		desc.primitive.stripIndexFormat = WGPUIndexFormat_Uint16;
-		pw->render_handle_u16 = wgpuDeviceCreateRenderPipeline(device, &desc);
+		if (pw->create_args) {
+			_render_pipeline_create_async(pw, desc, &pw->render_handle_u16);
+		} else {
+			pw->render_handle_u16 = wgpuDeviceCreateRenderPipeline(device, &desc);
+		}
 		// Non-fatal if this fails — Uint32 variant still works for the common case.
-		if (!pw->render_handle_u16) {
+		if (!pw->create_args && !pw->render_handle_u16) {
 			WARN_PRINT_ONCE("WebGPU: failed to create Uint16 strip pipeline variant.");
 		}
 	}
@@ -9717,9 +9835,9 @@ void RenderingDeviceDriverWebGPU::begin_segment(uint32_t p_frame_index, uint32_t
 		const WGCreationStats &cs = _creation_stats;
 		EM_ASM({
 			console.log('[PERF] create: shaders=' + $0 + '/' + $12 + '/' + $1.toFixed(0) + 'ms tint=' + $2 + '/' + $3.toFixed(0) + 'ms baked=' + $13 + ' precompiled=' + $4 + ' disk=' + $11 +
-				' spec_modules=' + $5 + '/' + $6.toFixed(0) + 'ms render_pipelines=' + $7 + '/' + $8.toFixed(0) + 'ms compute_pipelines=' + $9 + '/' + $10.toFixed(0) + 'ms at=' + performance.now().toFixed(0));
+				' spec_modules=' + $5 + '/' + $6.toFixed(0) + 'ms render_pipelines=' + $7 + '/' + $8.toFixed(0) + 'ms deferred=' + $14 + ' finished_now=' + $15 + ' compute_pipelines=' + $9 + '/' + $10.toFixed(0) + 'ms at=' + performance.now().toFixed(0));
 		}, cs.shaders, cs.shader_ms, _spv_to_wgsl_cache_misses, cs.tint_ms, _spv_to_wgsl_precompiled_hits,
-				cs.spec_modules, cs.spec_ms, cs.render_pipelines, cs.render_pipeline_ms, cs.compute_pipelines, cs.compute_pipeline_ms, _spv_to_wgsl_disk_hits, cs.shaders_requested, _spv_to_wgsl_baked_hits);
+				cs.spec_modules, cs.spec_ms, cs.render_pipelines, cs.render_pipeline_ms, cs.compute_pipelines, cs.compute_pipeline_ms, _spv_to_wgsl_disk_hits, cs.shaders_requested, _spv_to_wgsl_baked_hits, cs.render_pipelines_deferred, cs.render_pipelines_finished_now);
 		perf.reset();
 		perf.frames_since_log = 0;
 		perf.last_log_time = now;

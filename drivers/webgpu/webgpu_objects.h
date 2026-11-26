@@ -245,6 +245,22 @@ struct WGFramebuffer {
 // Pipeline
 // =============================================================================
 
+// The arguments of a deferred render_pipeline_create(), kept until it's ready.
+struct WGRenderPipelineCreateArgs {
+	RDD::ShaderID shader;
+	RDD::VertexFormatID vertex_format;
+	RDD::RenderPrimitive render_primitive = RDD::RENDER_PRIMITIVE_POINTS;
+	RDD::PipelineRasterizationState rasterization_state;
+	RDD::PipelineMultisampleState multisample_state;
+	RDD::PipelineDepthStencilState depth_stencil_state;
+	RDD::PipelineColorBlendState blend_state;
+	LocalVector<int32_t> color_attachments;
+	BitField<RDD::PipelineDynamicStateFlags> dynamic_state = {};
+	RDD::RenderPassID render_pass;
+	uint32_t render_subpass = 0;
+	LocalVector<RDD::PipelineSpecializationConstant> specialization_constants;
+};
+
 struct WGPipelineWrapper {
 	enum Type { RENDER, COMPUTE };
 	Type type = RENDER;
@@ -267,6 +283,15 @@ struct WGPipelineWrapper {
 	// Uint32 variants and select the correct one at draw time.
 	WGPURenderPipeline render_handle_u16 = nullptr;
 	bool is_strip = false;
+	// Deferred creation: the handles arrive from createRenderPipelineAsync
+	// callbacks. create_args keeps what's needed to create them synchronously
+	// instead if the pipeline is needed first. Results arriving after that, or
+	// after the pipeline was freed, are discarded.
+	struct WGRenderPipelineCreateArgs *create_args = nullptr;
+	uint8_t async_pending = 0;
+	bool async_discard = false;
+	bool freed = false; // pipeline_free() ran while results were pending.
+	bool is_ready() const { return async_pending == 0 || async_discard; }
 
 	WGPipelineWrapper() : render_handle(nullptr) {}
 };
