@@ -209,6 +209,8 @@ class SampleNodeBus {
 		this._c = GodotAudio.ctx.createGain();
 		/** @type {GainNode} */
 		this._lfe = GodotAudio.ctx.createGain();
+		/** @type {Float32Array} The last volume set per channel. */
+		this._volume = new Float32Array(GodotAudio.MAX_VOLUME_CHANNELS).fill(NaN);
 		/** @type {ChannelMergerNode} */
 		this._channelMerger = GodotAudio.ctx.createChannelMerger(NUMBER_OF_WEB_CHANNELS);
 
@@ -285,12 +287,21 @@ class SampleNodeBus {
 				`Volume length isn't "${GodotAudio.MAX_VOLUME_CHANNELS}", is ${volume.length} instead`
 			);
 		}
-		this._l.gain.value = volume[GodotAudio.GodotChannel.CHANNEL_L] ?? 0;
-		this._r.gain.value = volume[GodotAudio.GodotChannel.CHANNEL_R] ?? 0;
-		this._sl.gain.value = volume[GodotAudio.GodotChannel.CHANNEL_SL] ?? 0;
-		this._sr.gain.value = volume[GodotAudio.GodotChannel.CHANNEL_SR] ?? 0;
-		this._c.gain.value = volume[GodotAudio.GodotChannel.CHANNEL_C] ?? 0;
-		this._lfe.gain.value = volume[GodotAudio.GodotChannel.CHANNEL_LFE] ?? 0;
+		// Engines call this every frame for every playing sample; writing an
+		// AudioParam is costly even when the value doesn't change.
+		const set = (node, channel) => {
+			const value = volume[channel] ?? 0;
+			if (this._volume[channel] !== value) {
+				this._volume[channel] = value;
+				node.gain.value = value;
+			}
+		};
+		set(this._l, GodotAudio.GodotChannel.CHANNEL_L);
+		set(this._r, GodotAudio.GodotChannel.CHANNEL_R);
+		set(this._sl, GodotAudio.GodotChannel.CHANNEL_SL);
+		set(this._sr, GodotAudio.GodotChannel.CHANNEL_SR);
+		set(this._c, GodotAudio.GodotChannel.CHANNEL_C);
+		set(this._lfe, GodotAudio.GodotChannel.CHANNEL_LFE);
 	}
 
 	/**
@@ -446,6 +457,7 @@ class SampleNode {
 		this._sampleNodeBuses = new Map();
 		/** @type {AudioBufferSourceNode | null} */
 		this._source = GodotAudio.ctx.createBufferSource();
+		this._sourcePlaybackRate = NaN;
 
 		this._onended = null;
 		/** @type {AudioWorkletNode | null} */
@@ -590,7 +602,7 @@ class SampleNode {
 		for (let busIdx = 0; busIdx < buses.length; busIdx++) {
 			const sampleNodeBus = this.getSampleNodeBus(buses[busIdx]);
 			sampleNodeBus.setVolume(
-				volumes.slice(
+				volumes.subarray(
 					busIdx * GodotAudio.MAX_VOLUME_CHANNELS,
 					(busIdx * GodotAudio.MAX_VOLUME_CHANNELS) + GodotAudio.MAX_VOLUME_CHANNELS
 				)
@@ -708,7 +720,11 @@ class SampleNode {
 	 * @returns {void}
 	 */
 	_syncPlaybackRate() {
-		this._source.playbackRate.value = this.getPlaybackRate() * this.getPitchScale();
+		const rate = this.getPlaybackRate() * this.getPitchScale();
+		if (this._sourcePlaybackRate !== rate) {
+			this._sourcePlaybackRate = rate;
+			this._source.playbackRate.value = rate;
+		}
 	}
 
 	/**
@@ -721,6 +737,7 @@ class SampleNode {
 			this._source.disconnect();
 		}
 		this._source = GodotAudio.ctx.createBufferSource();
+		this._sourcePlaybackRate = NaN;
 		this._source.buffer = this.getSample().getAudioBuffer();
 
 		// Make sure that we connect the new source to the sample node bus.

@@ -5513,11 +5513,13 @@ RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<Bou
 				// Only provide the first texture for array bindings.
 				WGPUTextureViewDimension expected_dim = WGPUTextureViewDimension_Undefined;
 				WGPUTextureSampleType expected_sample = WGPUTextureSampleType_Undefined;
+				bool expected_reads = false;
 				if (p_set_index < (uint32_t)shader->bind_group_infos.size()) {
 					for (const auto &bge : shader->bind_group_infos[p_set_index].entries) {
 						if (bge.layout_entry.binding == uniform.binding * 2) {
 							expected_dim = bge.layout_entry.texture.viewDimension;
 							expected_sample = bge.layout_entry.texture.sampleType;
+							expected_reads = bge.layout_entry.visibility != WGPUShaderStage_None;
 							break;
 						}
 					}
@@ -5533,7 +5535,7 @@ RDD::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<Bou
 						// fallback textures), substitute a float fallback texture.
 						WGPUTextureView depth_copy = nullptr;
 						if (expected_sample == WGPUTextureSampleType_Float && _is_depth_format(tex->format) &&
-								expected_dim == WGPUTextureViewDimension_2D) {
+								expected_dim == WGPUTextureViewDimension_2D && expected_reads) {
 							depth_copy = _depth_float_copy_view(tex);
 						}
 						if (depth_copy) {
@@ -6076,10 +6078,12 @@ WGPUBindGroup RenderingDeviceDriverWebGPU::_get_compatible_bind_group(WGUniformS
 			// substitute the fallback float texture view.
 			if (entry.textureView != nullptr) {
 				WGPUTextureSampleType target_tex_sample = WGPUTextureSampleType_BindingNotUsed;
+				bool target_reads = false;
 				for (const auto &bge : p_target_shader->bind_group_infos[p_set_idx].entries) {
 					if (bge.layout_entry.binding == entry.binding &&
 							bge.layout_entry.texture.sampleType != WGPUTextureSampleType_BindingNotUsed) {
 						target_tex_sample = bge.layout_entry.texture.sampleType;
+						target_reads = bge.layout_entry.visibility != WGPUShaderStage_None;
 						break;
 					}
 				}
@@ -6098,8 +6102,9 @@ WGPUBindGroup RenderingDeviceDriverWebGPU::_get_compatible_bind_group(WGUniformS
 				// float copy, or the fallback when it cannot have one.
 				if (source_tex_sample == WGPUTextureSampleType_Depth &&
 						target_tex_sample == WGPUTextureSampleType_Float) {
+					// A copy is only worth its per-frame refresh when the shader reads it.
 					WGTexture *bound = p_us->bound_textures.has(entry.binding) ? p_us->bound_textures[entry.binding] : nullptr;
-					WGPUTextureView depth_copy = _depth_float_copy_view(bound);
+					WGPUTextureView depth_copy = target_reads ? _depth_float_copy_view(bound) : nullptr;
 					if (depth_copy) {
 						entry.textureView = depth_copy;
 					} else if (fallback_float_texture_view != nullptr) {
