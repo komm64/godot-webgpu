@@ -34,6 +34,7 @@
 #include "rendering_context_driver_webgpu.h"
 #include "rendering_shader_container_webgpu.h"
 #include "pixel_formats_webgpu.h"
+#include "spirv_preprocess.h"
 #include "spirv_to_wgsl.h"
 
 #include "core/config/project_settings.h"
@@ -3893,7 +3894,11 @@ bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<Rend
 		}
 
 		// Store raw SPIR-V for potential re-conversion with specialization constants.
-		shader->stage_spirv[(int)s.shader_stage] = spv_bytes;
+		// Stages without any (such as the ubershader's, which reads them from push
+		// constants) are never translated again.
+		if (spirv_preprocess::has_spec_constants(spv_bytes)) {
+			shader->stage_spirv[(int)s.shader_stage] = spv_bytes;
+		}
 
 		// emdawnwebgpu does NOT support WGPUShaderSourceSPIRV — it's a thin wrapper
 		// around the browser's WebGPU API which only accepts WGSL.

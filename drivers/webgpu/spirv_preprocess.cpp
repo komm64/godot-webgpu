@@ -3156,6 +3156,29 @@ Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes) {
 	return out;
 }
 
+// ---- has_spec_constants ----
+
+bool has_spec_constants(const Vector<uint8_t> &p_bytes) {
+	const uint8_t *data = p_bytes.ptr();
+	const int64_t len = p_bytes.size();
+	const uint32_t total_words = (uint32_t)(len / 4);
+
+	uint32_t pos = 5;
+	while (pos < total_words) {
+		const uint32_t w0 = read_word(data, len, pos);
+		const uint32_t wc = w0 >> 16;
+		const uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			return true; // Can't tell; keep the module specializable.
+		}
+		if (op >= OP_SPEC_CONSTANT_TRUE && op <= OP_SPEC_CONSTANT_OP) {
+			return true;
+		}
+		pos += wc;
+	}
+	return false;
+}
+
 // ---- spec_constants_fit_overrides ----
 
 bool spec_constants_fit_overrides(const Vector<uint8_t> &p_bytes) {

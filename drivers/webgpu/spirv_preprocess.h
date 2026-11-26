@@ -196,6 +196,9 @@ Vector<uint8_t> strip_writeonly_storage_decoration(const Vector<uint8_t> &p_byte
 // only ever needs to react to, the final preprocessed form.
 Vector<uint8_t> eliminate_dead_resources(const Vector<uint8_t> &p_bytes);
 
+// True when the module declares any specialization constant.
+bool has_spec_constants(const Vector<uint8_t> &p_bytes);
+
 // True when Tint can turn every specialization constant into a WGSL override:
 // it maps scalar OpSpecConstant* and OpSpecConstantOp, but not composites.
 bool spec_constants_fit_overrides(const Vector<uint8_t> &p_bytes);
