@@ -1054,6 +1054,10 @@ public:
 		bool avoid_compute_after_draw = false;
 		bool dont_print_on_render_pipeline_creation_failure = false;
 		bool disable_ubershaders = false;
+		// Shaders and pipelines can only be created on the thread that owns
+		// the device, so their creation tasks run there instead of in
+		// WorkerThreadPool.
+		bool create_on_calling_thread = false;
 	};
 
 	////////////////////////////////////////////

@@ -25,6 +25,14 @@ on:
         options:
           - 'no'
           - 'yes'
+      threads:
+        description: Build with threads (threads=yes), e.g. for apps whose GDExtensions use threads.
+        required: false
+        type: choice
+        default: 'no'
+        options:
+          - 'no'
+          - 'yes'
       extra_scons:
         description: Extra SCons arguments, e.g. linkflags=--profiling-funcs to keep wasm function names for profiling.
         required: false
@@ -37,7 +45,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}|${{ github.ref_name }}|${{ inputs.ref || '' }}|${{ inputs.target || '' }}
+  group: ${{ github.workflow }}|${{ github.ref_name }}|${{ inputs.ref || '' }}|${{ inputs.target || '' }}|${{ inputs.threads || '' }}
   cancel-in-progress: true
 
 # dev_mode / production はターゲット別 (Compilation ステップで付与):
@@ -50,7 +58,6 @@ env:
   SCONS_FLAGS: >-
     tests=no
     debug_symbols=no
-    threads=no
     dlink_enabled=yes
     webgpu=yes
     opengl3=no
@@ -102,7 +109,7 @@ jobs:
       - name: Compilation
         uses: ./.github/actions/godot-build
         with:
-          scons-flags: ${{ env.SCONS_FLAGS }} ${{ (github.event_name == 'push' || inputs.target == 'template_release') && 'production=yes' || 'dev_mode=yes' }} ${{ inputs.disable_3d == 'yes' && 'disable_3d=yes' || '' }} ${{ inputs.extra_scons }}
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ (github.event_name == 'push' || inputs.target == 'template_release') && 'production=yes' || 'dev_mode=yes' }} threads=${{ inputs.threads || 'no' }} ${{ inputs.disable_3d == 'yes' && 'disable_3d=yes' || '' }} ${{ inputs.extra_scons }}
           platform: web
           target: ${{ github.event_name == 'push' && 'template_release' || inputs.target }}
 
@@ -115,8 +122,8 @@ jobs:
       - name: Upload artifact
         uses: ./.github/actions/upload-artifact
         with:
-          name: komm64-webgpu-web-${{ github.event_name == 'push' && 'template_release' || inputs.target }}
-          path: bin/godot.web.${{ github.event_name == 'push' && 'template_release' || inputs.target }}.wasm32.nothreads.dlink.zip
+          name: komm64-webgpu-web-${{ github.event_name == 'push' && 'template_release' || inputs.target }}${{ inputs.threads == 'yes' && '-threads' || '' }}
+          path: bin/godot.web.${{ github.event_name == 'push' && 'template_release' || inputs.target }}.wasm32*.dlink.zip
 
       - name: Upload symbol maps (if any)
         uses: actions/upload-artifact@v4
@@ -130,5 +137,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: bin/godot.web.${{ github.event_name == 'push' && 'template_release' || inputs.target }}.wasm32.nothreads.dlink.zip
+          files: bin/godot.web.${{ github.event_name == 'push' && 'template_release' || inputs.target }}.wasm32*.dlink.zip
           generate_release_notes: true
