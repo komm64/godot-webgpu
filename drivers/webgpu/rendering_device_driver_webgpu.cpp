@@ -3813,7 +3813,7 @@ bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<Rend
 	for (int set = 0; set < shader_refl.uniform_sets.size(); set++) {
 		for (const RenderingDeviceCommons::ShaderUniform &u : shader_refl.uniform_sets[set]) {
 			if (u.type == RDD::UNIFORM_TYPE_STORAGE_BUFFER && ((uint32_t)u.stages & RDD::SHADER_STAGE_VERTEX_BIT) == 0) {
-				shader->fragment_only_storage.push_back(((uint32_t)set << 16) | u.binding);
+				shader->fragment_only_storage.push_back(((uint32_t)set << 16) | (u.binding * 2)); // WGSL binding, see the BGL keys.
 			}
 		}
 	}
