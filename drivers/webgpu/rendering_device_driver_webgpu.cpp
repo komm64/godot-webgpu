@@ -3997,11 +3997,31 @@ bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<Rend
 		// For render stages (vertex + fragment), demote all read_write storage to read (in-place,
 		// same string length). This ensures the BGL can use ReadOnlyStorage with Vertex|Fragment
 		// visibility. Compute stages keep read_write for actual writes.
+		// A fragment-only binding keeps read_write, so fragment shaders can still write it.
 		if (s.shader_stage == RDD::SHADER_STAGE_VERTEX || s.shader_stage == RDD::SHADER_STAGE_FRAGMENT) {
 			char *q = wgsl_str;
 			while ((q = strstr(q, "var<storage, read_write>")) != nullptr) {
-				// "var<storage, read_write>" = 24 chars → "var<storage, read>      " = 24 chars
-				memcpy(q, "var<storage, read>      ", 24);
+				bool demote = s.shader_stage == RDD::SHADER_STAGE_VERTEX;
+				if (!demote) {
+					const char *decl = q;
+					while (decl > wgsl_str && decl > q - 64 && strncmp(decl, "@group(", 7) != 0) {
+						decl--;
+					}
+					unsigned int grp = 0, bnd = 0;
+					demote = true;
+					if (parse_group_binding(decl, grp, bnd) && grp < (unsigned int)shader_refl.uniform_sets.size()) {
+						for (const RenderingDeviceCommons::ShaderUniform &u : shader_refl.uniform_sets[grp]) {
+							if (u.binding == bnd) {
+								demote = (u.stages & RDD::SHADER_STAGE_VERTEX_BIT) != 0;
+								break;
+							}
+						}
+					}
+				}
+				if (demote) {
+					// "var<storage, read_write>" = 24 chars → "var<storage, read>      " = 24 chars
+					memcpy(q, "var<storage, read>      ", 24);
+				}
 				q += 24;
 			}
 		}
