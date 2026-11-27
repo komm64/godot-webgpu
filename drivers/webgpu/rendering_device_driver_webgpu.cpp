@@ -9862,6 +9862,8 @@ RenderingDeviceDriver::DriverWorkarounds RenderingDeviceDriverWebGPU::get_driver
 	// so a draw never waits on a background compile and has no use for an
 	// ubershader; the browser takes 1-2 s to compile each of them.
 	workarounds.disable_ubershaders = true;
+	// The GPUDevice belongs to the main JS thread; pthread workers can't use it.
+	workarounds.create_on_calling_thread = true;
 	return workarounds;
 }
 

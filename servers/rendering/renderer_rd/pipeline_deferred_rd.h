@@ -66,6 +66,10 @@ protected:
 
 	void _start(const CreationParameters &c) {
 		free();
+		if (RD::get_singleton()->get_driver_workarounds().create_on_calling_thread) {
+			_create(c);
+			return;
+		}
 		task = WorkerThreadPool::get_singleton()->add_template_task(this, &PipelineDeferredRD::_create, c, true, "PipelineCompilation");
 	}
 

@@ -147,6 +147,11 @@ public:
 		print_line("HASH:", p_key_hash, "SOURCE:", source_name);
 #endif
 
+		if (RD::get_singleton()->get_driver_workarounds().create_on_calling_thread) {
+			(creation_object->*creation_function)(p_key);
+			return;
+		}
+
 		// Queue a background compilation task.
 		WorkerThreadPool::TaskID task_id = WorkerThreadPool::get_singleton()->add_template_task(creation_object, creation_function, p_key, p_high_priority, "PipelineCompilation");
 		compilation_tasks.insert(p_key_hash, task_id);
