@@ -150,6 +150,8 @@ def write_export_presets(presets_file: Path, template_abs: str, bake: bool = Fal
         f'custom_template/debug="{escaped}"\n'
         f'custom_template/release="{escaped}"\n'
         "variant/extensions_support=true\n"
+        # Templates built with threads=no are named *.nothreads.*.
+        f"variant/thread_support={'false' if '.nothreads.' in Path(template_abs).name else 'true'}\n"
         "vram_texture_compression/for_desktop=true\n"
         "html/export_icon=false\n"
     )
