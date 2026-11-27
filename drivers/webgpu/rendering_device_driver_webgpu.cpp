@@ -198,6 +198,29 @@ static bool parse_group_binding(const char *p, unsigned int &r_grp, unsigned int
 	return true;
 }
 
+// WebGPU forbids writable storage buffers in vertex shaders, and Tint emits
+// read_write for every SSBO without NonWritable. Demote them to read in render
+// stages (same string length), except in fragment WGSL for bindings in
+// p_fragment_only, so fragment shaders can still write those.
+static void _demote_render_storage(char *p_wgsl, bool p_fragment, const LocalVector<uint32_t> &p_fragment_only) {
+	char *q = p_wgsl;
+	while ((q = strstr(q, "var<storage, read_write>")) != nullptr) {
+		bool demote = true;
+		if (p_fragment) {
+			const char *decl = q;
+			while (decl > p_wgsl && decl > q - 64 && strncmp(decl, "@group(", 7) != 0) {
+				decl--;
+			}
+			unsigned int grp = 0, bnd = 0;
+			demote = !(parse_group_binding(decl, grp, bnd) && p_fragment_only.has(((uint32_t)grp << 16) | (uint32_t)bnd));
+		}
+		if (demote) {
+			memcpy(q, "var<storage, read>      ", 24);
+		}
+		q += 24;
+	}
+}
+
 // =============================================================================
 // SPIR-V → WGSL conversion (Tint + SPIR-V preprocessing)
 // =============================================================================
@@ -3786,6 +3809,14 @@ bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<Rend
 
 	Ref<RenderingShaderContainerWebGPU> wg_container = p_shader_container;
 	RenderingDeviceCommons::ShaderReflection shader_refl = p_shader_container->get_shader_reflection();
+	shader->fragment_only_storage.clear();
+	for (int set = 0; set < shader_refl.uniform_sets.size(); set++) {
+		for (const RenderingDeviceCommons::ShaderUniform &u : shader_refl.uniform_sets[set]) {
+			if (u.type == RDD::UNIFORM_TYPE_STORAGE_BUFFER && ((uint32_t)u.stages & RDD::SHADER_STAGE_VERTEX_BIT) == 0) {
+				shader->fragment_only_storage.push_back(((uint32_t)set << 16) | u.binding);
+			}
+		}
+	}
 
 	shader->push_constant_bind_group = wg_container->get_push_constant_bind_group();
 	shader->push_constant_binding = wg_container->get_push_constant_binding();
@@ -3992,38 +4023,8 @@ bool RenderingDeviceDriverWebGPU::_shader_build(WGShader *shader, const Ref<Rend
 			}
 		}
 
-		// WebGPU restriction: Storage buffers with read_write access cannot be used in vertex shaders.
-		// Tint generates var<storage, read_write> for any SSBO without NonWritable decoration.
-		// For render stages (vertex + fragment), demote all read_write storage to read (in-place,
-		// same string length). This ensures the BGL can use ReadOnlyStorage with Vertex|Fragment
-		// visibility. Compute stages keep read_write for actual writes.
-		// A fragment-only binding keeps read_write, so fragment shaders can still write it.
 		if (s.shader_stage == RDD::SHADER_STAGE_VERTEX || s.shader_stage == RDD::SHADER_STAGE_FRAGMENT) {
-			char *q = wgsl_str;
-			while ((q = strstr(q, "var<storage, read_write>")) != nullptr) {
-				bool demote = s.shader_stage == RDD::SHADER_STAGE_VERTEX;
-				if (!demote) {
-					const char *decl = q;
-					while (decl > wgsl_str && decl > q - 64 && strncmp(decl, "@group(", 7) != 0) {
-						decl--;
-					}
-					unsigned int grp = 0, bnd = 0;
-					demote = true;
-					if (parse_group_binding(decl, grp, bnd) && grp < (unsigned int)shader_refl.uniform_sets.size()) {
-						for (const RenderingDeviceCommons::ShaderUniform &u : shader_refl.uniform_sets[grp]) {
-							if (u.binding == bnd) {
-								demote = (u.stages & RDD::SHADER_STAGE_VERTEX_BIT) != 0;
-								break;
-							}
-						}
-					}
-				}
-				if (demote) {
-					// "var<storage, read_write>" = 24 chars → "var<storage, read>      " = 24 chars
-					memcpy(q, "var<storage, read>      ", 24);
-				}
-				q += 24;
-			}
+			_demote_render_storage(wgsl_str, s.shader_stage == RDD::SHADER_STAGE_FRAGMENT, shader->fragment_only_storage);
 		}
 
 		// Chrome doesn't support the 'sized_binding_array' WGSL language feature.
@@ -8638,7 +8639,8 @@ static PackedByteArray _patch_spirv_spec_constants(const PackedByteArray &p_spir
 WGPUShaderModule RenderingDeviceDriverWebGPU::_create_module_with_spec_constants(
 		const PackedByteArray &p_spirv,
 		VectorView<PipelineSpecializationConstant> p_constants,
-		ShaderStage p_stage) {
+		ShaderStage p_stage,
+		const LocalVector<uint32_t> &p_fragment_only_storage) {
 	_creation_stats.spec_modules++;
 	WGScopedMs timer(_creation_stats.spec_ms);
 	PackedByteArray patched = _patch_spirv_spec_constants(p_spirv, p_constants);
@@ -8708,13 +8710,8 @@ WGPUShaderModule RenderingDeviceDriverWebGPU::_create_module_with_spec_constants
 		}
 	}
 
-	// Demote read_write storage to read for vertex/fragment stages.
 	if (p_stage == SHADER_STAGE_VERTEX || p_stage == SHADER_STAGE_FRAGMENT) {
-		char *q = wgsl_str;
-		while ((q = strstr(q, "var<storage, read_write>")) != nullptr) {
-			memcpy(q, "var<storage, read>      ", 24);
-			q += 24;
-		}
+		_demote_render_storage(wgsl_str, p_stage == SHADER_STAGE_FRAGMENT, p_fragment_only_storage);
 	}
 
 	// FLATTEN-BA: Remove binding_array<T, N> → T (same pass as in shader_create_from_container).
@@ -8892,14 +8889,14 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(
 			// Legacy path: patch SPIR-V and create specialized modules via Tint.
 			if (!shader->stage_spirv[SHADER_STAGE_VERTEX].is_empty()) {
 				specialized_vertex = _create_module_with_spec_constants(
-						shader->stage_spirv[SHADER_STAGE_VERTEX], p_specialization_constants, SHADER_STAGE_VERTEX);
+						shader->stage_spirv[SHADER_STAGE_VERTEX], p_specialization_constants, SHADER_STAGE_VERTEX, shader->fragment_only_storage);
 				if (specialized_vertex) {
 					vertex_module = specialized_vertex;
 				}
 			}
 			if (!shader->stage_spirv[SHADER_STAGE_FRAGMENT].is_empty()) {
 				specialized_fragment = _create_module_with_spec_constants(
-						shader->stage_spirv[SHADER_STAGE_FRAGMENT], p_specialization_constants, SHADER_STAGE_FRAGMENT);
+						shader->stage_spirv[SHADER_STAGE_FRAGMENT], p_specialization_constants, SHADER_STAGE_FRAGMENT, shader->fragment_only_storage);
 				if (specialized_fragment) {
 					fragment_module = specialized_fragment;
 				}
@@ -9446,7 +9443,7 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_create(ShaderID p_
 			}
 		} else if (!shader->stage_spirv[SHADER_STAGE_COMPUTE].is_empty()) {
 			specialized_compute = _create_module_with_spec_constants(
-					shader->stage_spirv[SHADER_STAGE_COMPUTE], p_specialization_constants, SHADER_STAGE_COMPUTE);
+					shader->stage_spirv[SHADER_STAGE_COMPUTE], p_specialization_constants, SHADER_STAGE_COMPUTE, shader->fragment_only_storage);
 			if (specialized_compute) {
 				compute_module = specialized_compute;
 			}

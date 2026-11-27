@@ -154,6 +154,9 @@ struct WGShader {
 
 	// Per-stage raw SPIR-V bytes. Stored for deferred specialization constant patching.
 	PackedByteArray stage_spirv[6];
+	// (set << 16 | binding) of storage buffers only the fragment stage sees,
+	// which stay read_write in fragment WGSL (see _demote_render_storage).
+	LocalVector<uint32_t> fragment_only_storage;
 
 	WGPUPipelineLayout pipeline_layout = nullptr;
 	LocalVector<WGPUBindGroupLayout> bind_group_layouts; // One per descriptor set.
