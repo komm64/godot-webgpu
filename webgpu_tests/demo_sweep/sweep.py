@@ -321,6 +321,13 @@ def launch_chrome(chrome_exe: str, cdp_port: int, profile_dir: Path) -> subproce
         "--enable-features=Vulkan",
         "--use-angle=d3d11",
         "--no-first-run",
+        # A fresh Edge profile installs the signed-in user's synced extensions,
+        # whose onboarding tabs push the demo tab to the background, where its
+        # timers run once a second.
+        "--disable-extensions",
+        "--disable-sync",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
         "about:blank",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
