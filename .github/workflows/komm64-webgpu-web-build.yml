@@ -66,7 +66,12 @@ jobs:
   webgpu-web-template:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    name: WebGPU web template
+    name: WebGPU web template (threads=${{ matrix.threads }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # A release tag ships both variants; a manual run builds the one asked for.
+        threads: ${{ github.event_name == 'push' && fromJSON('["no", "yes"]') || fromJSON(format('["{0}"]', inputs.threads || 'no')) }}
 
     steps:
       - name: Checkout
@@ -109,7 +114,7 @@ jobs:
       - name: Compilation
         uses: ./.github/actions/godot-build
         with:
-          scons-flags: ${{ env.SCONS_FLAGS }} ${{ (github.event_name == 'push' || inputs.target == 'template_release') && 'production=yes' || 'dev_mode=yes' }} threads=${{ inputs.threads || 'no' }} ${{ inputs.disable_3d == 'yes' && 'disable_3d=yes' || '' }} ${{ inputs.extra_scons }}
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ (github.event_name == 'push' || inputs.target == 'template_release') && 'production=yes' || 'dev_mode=yes' }} threads=${{ matrix.threads }} ${{ inputs.disable_3d == 'yes' && 'disable_3d=yes' || '' }} ${{ inputs.extra_scons }}
           platform: web
           target: ${{ github.event_name == 'push' && 'template_release' || inputs.target }}
 
@@ -122,7 +127,7 @@ jobs:
       - name: Upload artifact
         uses: ./.github/actions/upload-artifact
         with:
-          name: komm64-webgpu-web-${{ github.event_name == 'push' && 'template_release' || inputs.target }}${{ inputs.threads == 'yes' && '-threads' || '' }}
+          name: komm64-webgpu-web-${{ github.event_name == 'push' && 'template_release' || inputs.target }}${{ matrix.threads == 'yes' && '-threads' || '' }}
           path: bin/godot.web.${{ github.event_name == 'push' && 'template_release' || inputs.target }}.wasm32*.dlink.zip
 
       - name: Upload symbol maps (if any)

@@ -82,7 +82,9 @@ engine shaders to WGSL. On Windows it uses WSL's `bash`, or Git Bash with
 LLVM `clang++`.
 
 The `komm64 WebGPU Web Build` GitHub Actions workflow builds the template
-on demand (Actions → Run workflow), and for `v*-webgpu*` tags.
+on demand (Actions → Run workflow). A `v*-webgpu*` tag attaches both
+templates (`threads=no` and `threads=yes`) and the Windows editor
+(`komm64 WebGPU Editor Build`) to one Release.
 
 ## Using it
 
@@ -91,6 +93,13 @@ above. Use the Mobile renderer (`rendering/renderer/rendering_method.web =
 "mobile"`). The page needs `renderingDriver: "webgpu"` in `GODOT_CONFIG`.
 This fork's export plugin sets it when you export with an editor built from
 this branch. With a stock editor, add it to the exported `index.html`.
+
+For faster loading, export with the editor from the same Release and enable
+`shader_baker/enabled` in the export preset. The editor then translates the
+shaders to WGSL at export time, so the browser skips Tint (3d/platformer:
+2.5 s of shader creation down to 0.3 s). Baked shaders are keyed by the
+engine commit, so an editor and a template from different commits fall back
+to translating in the browser.
 
 Browsers without WebGPU support cannot run these exports.
 

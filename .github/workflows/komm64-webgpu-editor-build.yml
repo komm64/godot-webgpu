@@ -1,8 +1,8 @@
 name: komm64 WebGPU Editor Build
 
-# Builds the Windows editor from this fork (manual dispatch). Baked WebGPU
-# shaders are keyed by the engine commit, so export with an editor built from
-# the same commit as the web template.
+# Builds the Windows editor from this fork (manual dispatch, or a release tag).
+# Baked WebGPU shaders are keyed by the engine commit, so export with an editor
+# built from the same commit as the web template; a release tag attaches both.
 
 on:
   workflow_dispatch:
@@ -11,12 +11,15 @@ on:
         description: Branch, tag, or commit to build.
         required: true
         default: '4.7'
+  push:
+    tags:
+      - 'v*-webgpu*'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: ${{ github.workflow }}|${{ inputs.ref }}
+  group: ${{ github.workflow }}|${{ inputs.ref || github.ref_name }}
   cancel-in-progress: true
 
 env:
@@ -40,7 +43,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
 
       - name: Restore build cache
@@ -74,3 +77,13 @@ jobs:
         uses: ./.github/actions/upload-artifact
         with:
           name: komm64-webgpu-windows-editor
+
+      - name: Zip editor (WebGPU tag only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: Compress-Archive -Path bin/godot.windows.editor.x86_64.exe -DestinationPath bin/godot-webgpu-${{ github.ref_name }}-windows-editor.zip
+
+      - name: Attach to Release (WebGPU tag only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/godot-webgpu-${{ github.ref_name }}-windows-editor.zip
